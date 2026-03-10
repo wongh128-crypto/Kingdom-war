@@ -1,0 +1,965 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Shield, Swords, TreePine, Mountain, Coins, Wheat, Users, 
+  Home, Hammer, Flag, Play, X, Skull, Star, Key, 
+  Globe, Send, Map as MapIcon, Castle, Loader
+} from 'lucide-react';
+
+// --- Game Constants ---
+const DAY_LENGTH = 10000; // 10 seconds per day
+const ENGINE_TICK = 50; 
+const MAP_SIZE = 1000; 
+const BASE_COORD = { x: 500, y: 500 };
+const WORKER_SPEED = 15; 
+
+const INITIAL_STATE = {
+  resources: { wood: 250, stone: 200, food: 400, gold: 100 },
+  population: { army: 30 },
+  buildings: { wall: 0, barracks: 0 },
+  stats: { day: 1, invasionsDefeated: 0 },
+  autoTasks: { wood: false, stone: false, food: false },
+  townUpgrades: { workerCount: 5, workerSpeed: 1, wallDefense: 1 },
+  alliances: { elves: false, dwarves: false },
+  heroes: [] 
+};
+
+// --- Helper Functions for Map ---
+const randomCoord = (minDist, maxDist) => {
+  const angle = Math.random() * Math.PI * 2;
+  const dist = minDist + Math.random() * (maxDist - minDist);
+  return {
+    x: Math.max(50, Math.min(950, BASE_COORD.x + Math.cos(angle) * dist)),
+    y: Math.max(50, Math.min(950, BASE_COORD.y + Math.sin(angle) * dist))
+  };
+};
+
+const generateNodes = () => {
+  const nodes = [];
+  for(let i=0; i<12; i++) nodes.push({ id: `w${i}`, type: 'wood', ...randomCoord(200, 450) });
+  for(let i=0; i<8; i++) nodes.push({ id: `s${i}`, type: 'stone', ...randomCoord(150, 400) });
+  for(let i=0; i<10; i++) nodes.push({ id: `f${i}`, type: 'food', ...randomCoord(80, 250) });
+  return nodes;
+};
+
+export default function App() {
+  // --- Multiplayer & Menu State ---
+  const [peerReady, setPeerReady] = useState(false);
+  const [appState, setAppState] = useState('menu'); // menu, loading, playing
+  const [playerName, setPlayerName] = useState('');
+  const [joinId, setJoinId] = useState('');
+  const [myPeerId, setMyPeerId] = useState('');
+  const [isHost, setIsHost] = useState(false);
+  const [view, setView] = useState('kingdom'); // kingdom, world
+  const [worldPlayers, setWorldPlayers] = useState({}); // Map of other players
+  const [tradeTarget, setTradeTarget] = useState(null);
+
+  // --- Network Refs ---
+  const peerRef = useRef(null);
+  const hostConnRef = useRef(null); // If I am a client, this is my connection to host
+  const clientConnsRef = useRef({}); // If I am the host, these are connections to clients
+  
+  // --- Game State ---
+  const [gameState, setGameState] = useState(INITIAL_STATE);
+  const [logs, setLogs] = useState([]);
+  const [idleWorkerCount, setIdleWorkerCount] = useState(5);
+  const [secretCode, setSecretCode] = useState('');
+  
+  const [showTownModal, setShowTownModal] = useState(false);
+  const [workerTick, setWorkerTick] = useState(0);
+  const [invasionTick, setInvasionTick] = useState(0);
+
+  // Mutable Engine State
+  const gameStateRef = useRef(gameState);
+  const mapNodes = useRef(generateNodes());
+  const pendingResources = useRef({ wood: 0, stone: 0, food: 0, gold: 0, woodLoss: 0, foodLoss: 0, armyLoss: 0, invadersDefeated: 0, specialLogs: [] });
+  const invadersRef = useRef([]);
+  const soldiersRef = useRef([]);
+  const alliesRef = useRef([]);
+  const heroesRef = useRef([]);
+  const workersRef = useRef(
+    Array.from({ length: 5 }).map((_, i) => ({
+      id: i, x: BASE_COORD.x + (Math.random() * 40 - 20), y: BASE_COORD.y + (Math.random() * 40 - 20),
+      state: 'idle', targetType: null, targetNode: null, gatherTimer: 0, inventory: null
+    }))
+  );
+
+  // Dynamic PeerJS Loading
+  useEffect(() => {
+    if (window.Peer) {
+      setPeerReady(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js';
+    script.async = true;
+    script.onload = () => setPeerReady(true);
+    document.body.appendChild(script);
+  }, []);
+
+  // Sync React state to refs for the engine loop
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  // --- MULTIPLAYER NETWORKING (PEERJS) ---
+  const handleIncomingData = (data, senderId) => {
+    if (data.type === 'WORLD_STATE') {
+      setWorldPlayers(data.players);
+    } 
+    else if (data.type === 'PLAYER_STATE') {
+      if (isHost) {
+        setWorldPlayers(prev => ({ ...prev, [senderId]: data.state }));
+      }
+    } 
+    else if (data.type === 'GIFT') {
+      if (isHost && data.to !== myPeerId) {
+        const targetConn = clientConnsRef.current[data.to];
+        if (targetConn) targetConn.send(data);
+      } else {
+        pendingResources.current[data.resource] += data.amount;
+        pendingResources.current.specialLogs.push(`🎁 ${data.fromName} sent you ${data.amount} ${data.resource}!`);
+      }
+    }
+  };
+
+  const hostWorld = () => {
+    if (!playerName) return alert("Please enter a kingdom name!");
+    if (!window.Peer) return alert("Network library not loaded yet.");
+    
+    setAppState('loading');
+    const peer = new window.Peer(); // Using window.Peer dynamically
+    
+    peer.on('open', (id) => {
+      setMyPeerId(id);
+      setIsHost(true);
+      setAppState('playing');
+      setLogs([{ day: 1, message: `World Created! Share your ID: ${id}`, type: 'success' }]);
+    });
+
+    peer.on('connection', (conn) => {
+      clientConnsRef.current[conn.peer] = conn;
+      conn.on('data', (data) => handleIncomingData(data, conn.peer));
+      conn.on('close', () => {
+        setWorldPlayers(prev => {
+          const next = { ...prev };
+          delete next[conn.peer];
+          return next;
+        });
+        delete clientConnsRef.current[conn.peer];
+      });
+    });
+
+    peer.on('error', err => {
+       console.error(err);
+       alert("Network Error. Try again.");
+       setAppState('menu');
+    });
+    
+    peerRef.current = peer;
+  };
+
+  const joinWorld = () => {
+    if (!playerName || !joinId) return alert("Please enter a name and Host ID!");
+    if (!window.Peer) return alert("Network library not loaded yet.");
+
+    setAppState('loading');
+    const peer = new window.Peer();
+    
+    peer.on('open', (id) => {
+      setMyPeerId(id);
+      setIsHost(false);
+      
+      const conn = peer.connect(joinId);
+      conn.on('open', () => {
+        hostConnRef.current = conn;
+        setAppState('playing');
+        setLogs([{ day: 1, message: `Successfully joined ${joinId}'s world!`, type: 'success' }]);
+      });
+
+      conn.on('data', (data) => handleIncomingData(data, conn.peer));
+      conn.on('close', () => {
+        addLog("Lost connection to host!", "danger");
+      });
+    });
+
+    peer.on('error', err => {
+       console.error(err);
+       alert("Could not connect. Check the Host ID.");
+       setAppState('menu');
+    });
+
+    peerRef.current = peer;
+  };
+
+  // Sync my state to the network every 3 seconds
+  useEffect(() => {
+    if (appState !== 'playing') return;
+    
+    const syncTimer = setInterval(() => {
+      const myState = {
+        name: playerName,
+        army: gameStateRef.current.population.army,
+        wood: gameStateRef.current.resources.wood,
+        stone: gameStateRef.current.resources.stone,
+        food: gameStateRef.current.resources.food,
+        gold: gameStateRef.current.resources.gold,
+      };
+
+      if (isHost) {
+        setWorldPlayers(prev => {
+          const next = { ...prev, [myPeerId]: myState };
+          Object.values(clientConnsRef.current).forEach(conn => {
+            conn.send({ type: 'WORLD_STATE', players: next });
+          });
+          return next;
+        });
+      } else if (hostConnRef.current) {
+        hostConnRef.current.send({ type: 'PLAYER_STATE', state: myState });
+      }
+    }, 3000);
+
+    return () => clearInterval(syncTimer);
+  }, [appState, isHost, myPeerId, playerName]);
+
+  // --- Game Engine (Animation & Worker Logic) ---
+  useEffect(() => {
+    if (appState !== 'playing') return;
+
+    const engineTimer = setInterval(() => {
+      const workers = workersRef.current;
+      const nodes = mapNodes.current;
+      const autoTasks = gameStateRef.current.autoTasks;
+      const currentSpeedMult = gameStateRef.current.townUpgrades.workerSpeed;
+      const actualSpeed = WORKER_SPEED * currentSpeedMult;
+      let idleCount = 0;
+
+      workers.forEach(worker => {
+        if (worker.state === 'idle') {
+          idleCount++;
+          const activeAutos = Object.keys(autoTasks).filter(k => autoTasks[k]);
+          if (activeAutos.length > 0) {
+            worker.targetType = activeAutos[Math.floor(Math.random() * activeAutos.length)];
+            worker.state = 'seeking';
+          }
+        }
+
+        if (worker.state === 'seeking' && worker.targetType) {
+          if (!worker.targetNode) {
+            let closest = null, minDist = Infinity;
+            nodes.forEach(n => {
+              if (n.type === worker.targetType) {
+                const dist = Math.hypot(n.x - worker.x, n.y - worker.y);
+                if (dist < minDist) { minDist = dist; closest = n; }
+              }
+            });
+            worker.targetNode = closest;
+          }
+
+          if (worker.targetNode) {
+            const dx = worker.targetNode.x - worker.x;
+            const dy = worker.targetNode.y - worker.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist < actualSpeed) {
+              worker.state = 'gathering';
+              worker.gatherTimer = 0;
+            } else {
+              worker.x += (dx / dist) * actualSpeed;
+              worker.y += (dy / dist) * actualSpeed;
+            }
+          } else {
+            worker.state = 'idle'; 
+          }
+        }
+
+        if (worker.state === 'gathering') {
+          worker.gatherTimer++;
+          if (worker.gatherTimer > (20 / currentSpeedMult)) { 
+            worker.inventory = worker.targetType;
+            worker.state = 'returning';
+            worker.targetNode = null;
+            worker.targetType = null;
+          }
+        }
+
+        if (worker.state === 'returning') {
+          const dx = BASE_COORD.x - worker.x;
+          const dy = BASE_COORD.y - worker.y;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < actualSpeed) {
+            if (worker.inventory) {
+              pendingResources.current[worker.inventory] += 1;
+              worker.inventory = null;
+            }
+            worker.state = 'idle';
+          } else {
+            worker.x += (dx / dist) * actualSpeed;
+            worker.y += (dy / dist) * actualSpeed;
+          }
+        }
+
+        // DOM Update
+        const el = document.getElementById(`worker-${worker.id}`);
+        if (el) {
+          el.style.left = `${(worker.x / MAP_SIZE) * 100}%`;
+          el.style.top = `${(worker.y / MAP_SIZE) * 100}%`;
+        }
+      });
+
+      // Combat Engine
+      const currentArmy = gameStateRef.current.population.army;
+      const activeInvaders = invadersRef.current.filter(i => !i.dead).length;
+
+      if (activeInvaders > 0) {
+        if (soldiersRef.current.length < currentArmy) {
+          soldiersRef.current.push({
+            id: Math.random().toString(36).substr(2, 9),
+            x: BASE_COORD.x + (Math.random() * 20 - 10),
+            y: BASE_COORD.y + (Math.random() * 20 - 10),
+            speed: 25, dead: false
+          });
+          setInvasionTick(t => t + 1); 
+        }
+
+        if (gameStateRef.current.alliances.elves && alliesRef.current.length < 10) {
+          alliesRef.current.push({ id: `elf-${Math.random()}`, x: 50, y: 50, speed: 30, dead: false, type: 'elf' });
+        }
+        if (gameStateRef.current.alliances.dwarves && alliesRef.current.length < 10) {
+          alliesRef.current.push({ id: `dwarf-${Math.random()}`, x: 950, y: 950, speed: 20, dead: false, type: 'dwarf' });
+        }
+
+        gameStateRef.current.heroes.forEach(h => {
+           if (!heroesRef.current.find(active => active.heroId === h.id)) {
+              heroesRef.current.push({ ...h, heroId: h.id, id: `hero-${h.id}`, x: BASE_COORD.x, y: BASE_COORD.y, dead: false });
+           }
+        });
+      }
+
+      const moveAndFight = (unit, isHero = false, isAlly = false) => {
+        if (unit.dead) return;
+        let target = null, minDist = Infinity;
+        invadersRef.current.forEach(invader => {
+          if (!invader.dead) {
+            const dist = Math.hypot(invader.x - unit.x, invader.y - unit.y);
+            if (dist < minDist) { minDist = dist; target = invader; }
+          }
+        });
+
+        if (target) {
+          const dx = target.x - unit.x;
+          const dy = target.y - unit.y;
+          const dist = Math.hypot(dx, dy);
+          const attackRange = isHero ? 30 : 15;
+
+          if (dist < attackRange) {
+            target.dead = true;
+            pendingResources.current.gold = (pendingResources.current.gold || 0) + Math.floor(Math.random() * 3) + 2;
+            pendingResources.current.invadersDefeated = (pendingResources.current.invadersDefeated || 0) + 1;
+            
+            if (isHero) {
+              if (unit.name === 'Super Sorcerer Gojo' && Math.random() < 0.3) {
+                pendingResources.current.specialLogs.push(`🌌 Gojo used Cosmic Scope & Rapid Strike Burst!`);
+                invadersRef.current.forEach(inv => {
+                  if (!inv.dead && Math.hypot(inv.x - unit.x, inv.y - unit.y) < 200) {
+                    inv.dead = true;
+                    pendingResources.current.invadersDefeated++;
+                    pendingResources.current.gold += 2;
+                  }
+                });
+              } else if (unit.name === 'Knight Commander' && Math.random() < 0.2) {
+                 pendingResources.current.specialLogs.push(`⚔️ Knight Commander used Cleave!`);
+              }
+            } else if (!isAlly) {
+              if (Math.random() < 0.15) {
+                unit.dead = true;
+                pendingResources.current.armyLoss = (pendingResources.current.armyLoss || 0) + 1;
+              }
+            } else {
+               if (Math.random() < 0.10) unit.dead = true;
+            }
+          } else {
+            unit.x += (dx / dist) * unit.speed;
+            unit.y += (dy / dist) * unit.speed;
+          }
+        } else {
+          const targetX = isAlly ? (unit.type === 'elf' ? 0 : 1000) : BASE_COORD.x;
+          const targetY = isAlly ? (unit.type === 'elf' ? 0 : 1000) : BASE_COORD.y;
+          const dx = targetX - unit.x;
+          const dy = targetY - unit.y;
+          const dist = Math.hypot(dx, dy);
+          
+          if (dist < 20) unit.dead = true;
+          else {
+            unit.x += (dx / dist) * unit.speed;
+            unit.y += (dy / dist) * unit.speed;
+          }
+        }
+
+        const el = document.getElementById(unit.id);
+        if (el) {
+          el.style.left = `${(unit.x / MAP_SIZE) * 100}%`;
+          el.style.top = `${(unit.y / MAP_SIZE) * 100}%`;
+        }
+      };
+
+      soldiersRef.current.forEach(s => moveAndFight(s));
+      soldiersRef.current = soldiersRef.current.filter(s => !s.dead);
+
+      alliesRef.current.forEach(a => moveAndFight(a, false, true));
+      alliesRef.current = alliesRef.current.filter(a => !a.dead);
+
+      heroesRef.current.forEach(h => moveAndFight(h, true));
+      heroesRef.current = heroesRef.current.filter(h => !h.dead);
+
+      invadersRef.current.forEach(invader => {
+        if (invader.dead) return;
+        const dx = BASE_COORD.x - invader.x;
+        const dy = BASE_COORD.y - invader.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < 20) {
+          invader.dead = true;
+          const wallLvl = gameStateRef.current.buildings.wall * gameStateRef.current.townUpgrades.wallDefense;
+          const blockChance = Math.min(0.8, wallLvl * 0.1); 
+          
+          if (Math.random() < blockChance) {
+             pendingResources.current.gold = (pendingResources.current.gold || 0) + 1;
+             pendingResources.current.invadersDefeated = (pendingResources.current.invadersDefeated || 0) + 1;
+          } else {
+             pendingResources.current.woodLoss = (pendingResources.current.woodLoss || 0) + 10;
+             pendingResources.current.foodLoss = (pendingResources.current.foodLoss || 0) + 10;
+          }
+        } else {
+          invader.x += (dx / dist) * invader.speed;
+          invader.y += (dy / dist) * invader.speed;
+        }
+
+        const el = document.getElementById(`invader-${invader.id}`);
+        if (el) {
+          el.style.left = `${(invader.x / MAP_SIZE) * 100}%`;
+          el.style.top = `${(invader.y / MAP_SIZE) * 100}%`;
+        }
+      });
+
+      invadersRef.current = invadersRef.current.filter(i => !i.dead);
+      setIdleWorkerCount(prev => prev !== idleCount ? idleCount : prev);
+
+    }, ENGINE_TICK);
+
+    return () => clearInterval(engineTimer);
+  }, [appState]);
+
+  // --- Day Cycle & Resource Sync ---
+  useEffect(() => {
+    if (appState !== 'playing') return;
+
+    const syncTimer = setInterval(() => {
+      const pending = pendingResources.current;
+      const hasUpdates = pending.wood > 0 || pending.stone > 0 || pending.food > 0 || 
+                         (pending.gold || 0) > 0 || (pending.woodLoss || 0) > 0 || 
+                         (pending.foodLoss || 0) > 0 || (pending.armyLoss || 0) > 0 || 
+                         (pending.invadersDefeated || 0) > 0 || pending.specialLogs.length > 0;
+
+      if (hasUpdates) {
+        setGameState(prev => {
+          const next = { ...prev, resources: { ...prev.resources }, population: { ...prev.population }, stats: { ...prev.stats } };
+
+          next.resources.wood = Math.max(0, next.resources.wood + pending.wood - (pending.woodLoss || 0));
+          next.resources.stone += pending.stone;
+          next.resources.food = Math.max(0, next.resources.food + pending.food - (pending.foodLoss || 0));
+          next.resources.gold += (pending.gold || 0);
+          next.population.army = Math.max(0, next.population.army - (pending.armyLoss || 0));
+          next.stats.invasionsDefeated += (pending.invadersDefeated || 0);
+
+          if ((pending.woodLoss || 0) > 0) {
+            setLogs(curr => [{ day: next.stats.day, message: `Raiders breached! Lost ${(pending.woodLoss||0)} wood.`, type: 'danger' }, ...curr].slice(0, 30));
+          } else if ((pending.invadersDefeated || 0) > 0) {
+            setLogs(curr => [{ day: next.stats.day, message: `Defended! Earned ${(pending.gold||0)} gold.`, type: 'success' }, ...curr].slice(0, 30));
+          }
+
+          if (pending.specialLogs.length > 0) {
+            pending.specialLogs.forEach(msg => {
+              setLogs(curr => [{ day: next.stats.day, message: msg, type: 'info' }, ...curr].slice(0, 30));
+            });
+          }
+          return next;
+        });
+        pendingResources.current = { wood: 0, stone: 0, food: 0, gold: 0, woodLoss: 0, foodLoss: 0, armyLoss: 0, invadersDefeated: 0, specialLogs: [] };
+      }
+    }, 500);
+
+    const dayTimer = setInterval(() => {
+      setGameState(prev => {
+        const next = JSON.parse(JSON.stringify(prev));
+        let newLogs = [];
+        next.stats.day += 1;
+
+        next.resources.food -= next.population.army;
+        if (next.resources.food < 0) {
+          next.resources.food = 0;
+          if (next.population.army > 0) {
+            next.population.army -= 1;
+            newLogs.push({ day: next.stats.day, message: 'A hungry soldier deserted!', type: 'danger' });
+          }
+        }
+
+        if (next.stats.day > 5 && Math.random() < 0.15) {
+          const strength = Math.floor(next.stats.day * 1.5) + 2;
+          for(let i=0; i<strength; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 600 + Math.random() * 100; 
+            invadersRef.current.push({
+              id: Math.random().toString(36).substr(2, 9),
+              x: BASE_COORD.x + Math.cos(angle) * dist, y: BASE_COORD.y + Math.sin(angle) * dist,
+              speed: 4 + Math.random() * 4, dead: false
+            });
+          }
+          setInvasionTick(t => t + 1); 
+          newLogs.push({ day: next.stats.day, message: `⚠️ INVASION! ${strength} raiders approaching!`, type: 'warning' });
+        }
+
+        if (newLogs.length > 0) {
+          setLogs(curr => [...newLogs.reverse(), ...curr].slice(0, 30));
+        }
+        return next;
+      });
+    }, DAY_LENGTH);
+
+    return () => { clearInterval(syncTimer); clearInterval(dayTimer); };
+  }, [appState]);
+
+  // --- UI Actions ---
+  const addLog = (msg, type = 'info') => {
+    setLogs(curr => [{ day: gameStateRef.current.stats.day, message: msg, type }, ...curr].slice(0, 30));
+  };
+
+  const commandWorker = (type) => {
+    const worker = workersRef.current.find(w => w.state === 'idle');
+    if (worker) {
+      worker.targetType = type;
+      worker.state = 'seeking';
+    } else addLog('All workers are busy!', 'warning');
+  };
+
+  const toggleAuto = (type) => setGameState(prev => ({ ...prev, autoTasks: { ...prev.autoTasks, [type]: !prev.autoTasks[type] } }));
+
+  const buildBarracks = () => {
+    if (gameState.resources.wood >= 100 && gameState.resources.stone >= 50) {
+      setGameState(prev => ({ ...prev, resources: { ...prev.resources, wood: prev.resources.wood - 100, stone: prev.resources.stone - 50 }, buildings: { ...prev.buildings, barracks: prev.buildings.barracks + 1 } }));
+      addLog('Built a Barracks.', 'success');
+    }
+  };
+
+  const buildWall = () => {
+    if (gameState.resources.stone >= 50) {
+      setGameState(prev => ({ ...prev, resources: { ...prev.resources, stone: prev.resources.stone - 50 }, buildings: { ...prev.buildings, wall: prev.buildings.wall + 1 } }));
+      addLog('Built a Stone Wall (+15 Defense).', 'success');
+    }
+  };
+
+  const trainArmy = () => {
+    if (gameState.buildings.barracks < 1) return addLog('Build a Barracks first.', 'warning');
+    if (gameState.resources.food >= 20 && gameState.resources.gold >= 10) {
+      setGameState(prev => ({ ...prev, resources: { ...prev.resources, food: prev.resources.food - 20, gold: prev.resources.gold - 10 }, population: { ...prev.population, army: prev.population.army + 1 } }));
+      addLog('Trained a new soldier.', 'success');
+    }
+  };
+
+  const buyAlliance = (faction) => {
+    if (gameState.resources.gold >= 300) {
+      setGameState(prev => ({ ...prev, resources: { ...prev.resources, gold: prev.resources.gold - 300 }, alliances: { ...prev.alliances, [faction]: true } }));
+      addLog(`Formed an alliance with the ${faction}!`, 'success');
+    }
+  };
+
+  const hireHero = () => {
+    if (gameState.resources.gold >= 500) {
+      if (gameState.heroes.find(h => h.id === 'knight')) return addLog('You already hired this hero.', 'warning');
+      setGameState(prev => ({ ...prev, resources: { ...prev.resources, gold: prev.resources.gold - 500 }, heroes: [...prev.heroes, { id: 'knight', name: 'Knight Commander', speed: 30 }] }));
+      addLog('Hired the Knight Commander!', 'success');
+    }
+  };
+
+  const redeemSecretCode = () => {
+    if (secretCode.toUpperCase() === 'INFINITE') {
+      if (!gameState.heroes.find(h => h.id === 'gojo')) {
+        setGameState(prev => ({ ...prev, heroes: [...prev.heroes, { id: 'gojo', name: 'Super Sorcerer Gojo', speed: 45 }] }));
+        addLog('🎉 CODE REDEEMED! Gojo joined!', 'success');
+      }
+    }
+    setSecretCode('');
+  };
+
+  const buyTownUpgrade = (type) => {
+    setGameState(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      if (type === 'worker') {
+        next.resources.food -= 50; next.resources.gold -= 20; next.townUpgrades.workerCount += 1;
+        workersRef.current.push({ id: workersRef.current.length, x: BASE_COORD.x, y: BASE_COORD.y, state: 'idle', targetType: null, targetNode: null, gatherTimer: 0, inventory: null });
+        setWorkerTick(t => t + 1); 
+      } else if (type === 'speed') {
+        next.resources.wood -= 50; next.resources.stone -= 50; next.townUpgrades.workerSpeed += 0.5;
+      } else if (type === 'wall') {
+        next.resources.stone -= 100; next.resources.gold -= 50; next.townUpgrades.wallDefense += 0.5;
+      }
+      return next;
+    });
+  };
+
+  const sendGift = (resource, amount) => {
+    if (!tradeTarget || gameState.resources[resource] < amount) return;
+    
+    // Deduct locally
+    setGameState(prev => ({
+       ...prev, 
+       resources: { ...prev.resources, [resource]: prev.resources[resource] - amount }
+    }));
+
+    // Send to network
+    const packet = { type: 'GIFT', resource, amount, fromName: playerName, to: tradeTarget.id };
+    if (isHost) {
+      // I'm host, route it to client
+      const conn = clientConnsRef.current[tradeTarget.id];
+      if (conn) conn.send(packet);
+    } else {
+      // Send to host to relay
+      if (hostConnRef.current) hostConnRef.current.send(packet);
+    }
+
+    addLog(`Sent ${amount} ${resource} to ${tradeTarget.name}!`, 'success');
+    setTradeTarget(null);
+  };
+
+  // --- RENDER MENUS ---
+  if (appState === 'menu') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white p-4">
+        <div className="bg-slate-900 border border-amber-600/30 p-8 rounded-xl max-w-md w-full shadow-2xl space-y-6">
+          <div className="text-center">
+            <Castle className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+            <h1 className="text-3xl font-bold text-amber-500 tracking-widest">KINGDOM BATTLES</h1>
+            <p className="text-slate-400 mt-2 text-sm">Multiplayer Edition</p>
+          </div>
+
+          {!peerReady ? (
+            <div className="flex flex-col items-center justify-center py-8 text-amber-400">
+               <Loader className="w-8 h-8 animate-spin mb-4" />
+               <p className="text-sm font-bold">Establishing Network Links...</p>
+            </div>
+          ) : (
+            <div className="space-y-4 pt-4 border-t border-slate-800">
+              <div>
+                <label className="text-xs text-slate-400 font-bold uppercase">Your Ruler Name</label>
+                <input 
+                  value={playerName} onChange={e => setPlayerName(e.target.value)} 
+                  placeholder="E.g. King Arthur" 
+                  className="w-full bg-slate-950 border border-slate-700 rounded p-3 text-amber-400 focus:border-amber-500 outline-none mt-1"
+                  maxLength={15}
+                />
+              </div>
+              
+              <button onClick={hostWorld} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-lg shadow transition flex justify-center items-center">
+                <Globe className="w-5 h-5 mr-2" /> Host a New World
+              </button>
+
+              <div className="relative flex py-2 items-center">
+                <div className="flex-grow border-t border-slate-800"></div>
+                <span className="flex-shrink-0 mx-4 text-slate-500 text-xs">OR</span>
+                <div className="flex-grow border-t border-slate-800"></div>
+              </div>
+
+              <div className="flex gap-2">
+                <input 
+                  value={joinId} onChange={e => setJoinId(e.target.value)} 
+                  placeholder="Paste Friend's ID" 
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded p-3 text-white focus:border-blue-500 outline-none"
+                />
+                <button onClick={joinWorld} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 rounded-lg shadow transition">
+                  Join
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (appState === 'loading') {
+    return <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white text-xl animate-pulse">
+       <Loader className="w-10 h-10 mb-4 animate-spin text-amber-500" />
+       Connecting to Realm...
+    </div>;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 p-4 font-sans select-none flex flex-col items-center">
+      <div className="w-full max-w-6xl space-y-4">
+        
+        {/* Header Bar */}
+        <div className="flex flex-col md:flex-row justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-amber-500 tracking-wider uppercase">{playerName}'S KINGDOM</h1>
+            <div className="text-sm text-slate-400 flex items-center gap-4 mt-1">
+              <span>Day {gameState.stats.day} • {idleWorkerCount}/{gameState.townUpgrades.workerCount} Workers Idle</span>
+              {isHost && (
+                <span className="bg-slate-800 text-amber-400 px-2 py-0.5 rounded text-xs border border-amber-900/50 cursor-pointer hover:bg-slate-700 transition" onClick={() => navigator.clipboard.writeText(myPeerId)}>
+                  Host ID: {myPeerId} (Click to copy)
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex space-x-4">
+            <ResourceBadge icon={TreePine} val={gameState.resources.wood} color="text-green-500" />
+            <ResourceBadge icon={Mountain} val={gameState.resources.stone} color="text-gray-400" />
+            <ResourceBadge icon={Wheat} val={gameState.resources.food} color="text-yellow-500" />
+            <ResourceBadge icon={Coins} val={gameState.resources.gold} color="text-amber-400" />
+            <ResourceBadge icon={Swords} val={gameState.population.army} color="text-red-500" />
+          </div>
+        </div>
+
+        {/* View Switcher */}
+        <div className="flex justify-center gap-4">
+          <button onClick={() => setView('kingdom')} className={`px-6 py-2 rounded-t-xl font-bold transition flex items-center ${view === 'kingdom' ? 'bg-slate-900 text-amber-500 border-t border-l border-r border-slate-800' : 'bg-slate-950 text-slate-500 hover:text-white'}`}>
+            <Home className="w-4 h-4 mr-2" /> My Kingdom
+          </button>
+          <button onClick={() => setView('world')} className={`px-6 py-2 rounded-t-xl font-bold transition flex items-center ${view === 'world' ? 'bg-slate-900 text-blue-400 border-t border-l border-r border-slate-800' : 'bg-slate-950 text-slate-500 hover:text-white'}`}>
+            <Globe className="w-4 h-4 mr-2" /> World Map
+          </button>
+        </div>
+
+        {/* Main Grid: Map + Controls */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          
+          {/* Main Visual Area */}
+          <div className="lg:col-span-2 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden relative shadow-inner" style={{ height: '500px' }}>
+            
+            {view === 'kingdom' ? (
+              <>
+                {/* Local Kingdom Map */}
+                <div className="absolute inset-0 bg-[#1a3a29] opacity-50" />
+                
+                {mapNodes.current.map(node => (
+                  <div key={node.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-transform hover:scale-110" style={{ left: `${(node.x/MAP_SIZE)*100}%`, top: `${(node.y/MAP_SIZE)*100}%` }}>
+                    {node.type === 'wood' && <div className="w-6 h-6 bg-green-700 rounded-full border-2 border-green-900 flex items-center justify-center"><TreePine size={14} className="text-green-300"/></div>}
+                    {node.type === 'stone' && <div className="w-5 h-5 bg-gray-500 rounded border-2 border-gray-700 flex items-center justify-center"><Mountain size={12} className="text-gray-300"/></div>}
+                    {node.type === 'food' && <div className="w-4 h-4 bg-emerald-600 rounded-full border border-emerald-800 flex items-center justify-center"><div className="w-1.5 h-1.5 bg-red-400 rounded-full"/></div>}
+                  </div>
+                ))}
+
+                <div className="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer hover:scale-105 transition-transform" style={{ left: `${(BASE_COORD.x/MAP_SIZE)*100}%`, top: `${(BASE_COORD.y/MAP_SIZE)*100}%`, zIndex: 10 }} onClick={() => setShowTownModal(true)}>
+                  <div className="w-16 h-16 bg-slate-800 border-4 border-slate-700 hover:border-amber-500 rounded-lg flex items-center justify-center shadow-2xl relative">
+                    <Home size={32} className="text-amber-500" />
+                  </div>
+                </div>
+
+                {workersRef.current.map(worker => (
+                  <div key={worker.id} id={`worker-${worker.id}`} className="absolute w-4 h-4 bg-amber-400 rounded-full border border-amber-600 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center shadow" style={{ zIndex: 20 }}>
+                    <div className="w-1.5 h-1.5 bg-slate-900 rounded-full opacity-50"/>
+                  </div>
+                ))}
+                {invadersRef.current.map(invader => (
+                  <div key={`invader-${invader.id}`} id={`invader-${invader.id}`} className="absolute w-4 h-4 bg-red-600 rounded-sm border border-red-800 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center" style={{ zIndex: 25 }}>
+                    <Skull size={10} className="text-red-200" />
+                  </div>
+                ))}
+                {soldiersRef.current.map(soldier => (
+                  <div key={soldier.id} id={`soldier-${soldier.id}`} className="absolute w-4 h-4 bg-blue-500 rounded-full border border-blue-700 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center" style={{ zIndex: 24 }}>
+                    <Shield size={10} className="text-blue-100" />
+                  </div>
+                ))}
+                {alliesRef.current.map(ally => (
+                  <div key={ally.id} id={ally.id} className={`absolute w-4 h-4 rounded-full border transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center ${ally.type === 'elf' ? 'bg-green-500 border-green-700' : 'bg-gray-400 border-gray-600'}`} style={{ zIndex: 23 }}>
+                    <Swords size={10} className="text-white" />
+                  </div>
+                ))}
+                {heroesRef.current.map(hero => (
+                  <div key={hero.id} id={hero.id} className="absolute w-6 h-6 bg-purple-500 rounded-full border-2 border-purple-300 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center shadow-[0_0_10px_rgba(168,85,247,0.8)]" style={{ zIndex: 26 }}>
+                    <Star size={14} className="text-white fill-white" />
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {/* Global World Map */}
+                <div className="absolute inset-0 bg-[#0f172a]" />
+                <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(#334155 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+                
+                <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
+                  <h2 className="text-xl font-bold text-blue-400 flex items-center"><MapIcon className="mr-2" /> Global Realm</h2>
+                  <span className="text-xs text-slate-400 bg-slate-900/80 px-3 py-1 rounded-full border border-slate-700">{Object.keys(worldPlayers).length + 1} Kingdoms Online</span>
+                </div>
+
+                {/* Render Other Players */}
+                <div className="absolute inset-0 flex flex-wrap justify-center items-center gap-12 p-12 overflow-y-auto">
+                   {/* Self */}
+                   <div className="flex flex-col items-center group">
+                      <div className="w-16 h-16 bg-amber-600/20 border-2 border-amber-500 rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.3)]">
+                         <Castle size={32} className="text-amber-500" />
+                      </div>
+                      <span className="mt-2 font-bold text-amber-400 text-sm">{playerName} (You)</span>
+                   </div>
+
+                   {/* Peers */}
+                   {Object.entries(worldPlayers).map(([id, pState]) => {
+                     if (id === myPeerId) return null; // safety check
+                     return (
+                       <div key={id} className="flex flex-col items-center cursor-pointer group" onClick={() => setTradeTarget({ id, name: pState.name })}>
+                          <div className="w-16 h-16 bg-blue-600/20 border-2 border-blue-500 rounded-xl flex items-center justify-center transition-transform group-hover:-translate-y-2 group-hover:shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                             <Castle size={32} className="text-blue-400" />
+                          </div>
+                          <span className="mt-2 font-bold text-slate-300 text-sm group-hover:text-white transition-colors">{pState.name}</span>
+                          <span className="text-xs text-slate-500 flex items-center mt-1"><Swords size={10} className="mr-1"/> {pState.army} Army</span>
+                       </div>
+                     )
+                   })}
+                </div>
+              </>
+            )}
+
+            {/* Town Center Modal */}
+            {showTownModal && view === 'kingdom' && (
+              <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center rounded-xl backdrop-blur-sm">
+                <div className="bg-slate-900 border border-slate-700 p-6 rounded-xl w-80 shadow-2xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-xl font-bold text-amber-500 flex items-center"><Home className="mr-2"/> Town Center</h3>
+                    <button onClick={() => setShowTownModal(false)} className="text-slate-400 hover:text-white"><X size={20} /></button>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <UpgradeBtn name="Hire Worker" desc="50 Food, 20 Gold" count={`${gameState.townUpgrades.workerCount} Workers`} action={() => buyTownUpgrade('worker')} disabled={gameState.resources.food < 50 || gameState.resources.gold < 20} />
+                    <UpgradeBtn name="Worker Speed" desc="50 Wood, 50 Stone" count={`Lv ${gameState.townUpgrades.workerSpeed * 2 - 1}`} action={() => buyTownUpgrade('speed')} disabled={gameState.resources.wood < 50 || gameState.resources.stone < 50} />
+                    <UpgradeBtn name="Fortify Walls" desc="100 Stone, 50 Gold" count={`Lv ${gameState.townUpgrades.wallDefense * 2 - 1}`} action={() => buyTownUpgrade('wall')} disabled={gameState.resources.stone < 100 || gameState.resources.gold < 50} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Trade Modal */}
+            {tradeTarget && view === 'world' && (
+              <div className="absolute inset-0 bg-black/70 z-50 flex items-center justify-center rounded-xl backdrop-blur-sm">
+                <div className="bg-slate-900 border border-blue-900/50 p-6 rounded-xl w-80 shadow-2xl">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-bold text-blue-400 flex items-center"><Send className="mr-2 w-5 h-5"/> Gift to {tradeTarget.name}</h3>
+                    <button onClick={() => setTradeTarget(null)} className="text-slate-400 hover:text-white"><X size={20} /></button>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-4">Send resources to aid your ally's kingdom!</p>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => sendGift('wood', 50)} disabled={gameState.resources.wood < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
+                       <TreePine size={20} className="text-green-500 mb-1" /> <span className="text-xs font-bold">50 Wood</span>
+                    </button>
+                    <button onClick={() => sendGift('stone', 50)} disabled={gameState.resources.stone < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
+                       <Mountain size={20} className="text-gray-400 mb-1" /> <span className="text-xs font-bold">50 Stone</span>
+                    </button>
+                    <button onClick={() => sendGift('food', 50)} disabled={gameState.resources.food < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
+                       <Wheat size={20} className="text-yellow-500 mb-1" /> <span className="text-xs font-bold">50 Food</span>
+                    </button>
+                    <button onClick={() => sendGift('gold', 20)} disabled={gameState.resources.gold < 20} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
+                       <Coins size={20} className="text-amber-400 mb-1" /> <span className="text-xs font-bold">20 Gold</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right: Management & Controls */}
+          <div className="flex flex-col space-y-4">
+            
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-4">
+              <h2 className="font-bold text-lg mb-4 flex items-center"><Users className="mr-2 text-blue-400" /> Worker Commands</h2>
+              <div className="space-y-3">
+                <CommandRow icon={TreePine} name="Wood" type="wood" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-green-500" btnColor="bg-green-700 hover:bg-green-600" />
+                <CommandRow icon={Mountain} name="Stone" type="stone" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-gray-400" btnColor="bg-gray-700 hover:bg-gray-600" />
+                <CommandRow icon={Wheat} name="Food" type="food" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-yellow-500" btnColor="bg-yellow-700 hover:bg-yellow-600" />
+              </div>
+            </div>
+
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 flex-1">
+              <h2 className="font-bold text-lg mb-4 flex items-center"><Hammer className="mr-2 text-amber-600" /> Upgrades & Army</h2>
+              <div className="space-y-2 h-48 overflow-y-auto custom-scrollbar pr-1">
+                <UpgradeBtn name="Barracks" desc="100 Wood, 50 Stone" count={gameState.buildings.barracks} action={buildBarracks} disabled={gameState.resources.wood < 100 || gameState.resources.stone < 50} />
+                <UpgradeBtn name="Stone Wall" desc="50 Stone (+15 Def)" count={gameState.buildings.wall} action={buildWall} disabled={gameState.resources.stone < 50} />
+                <div className="pt-2 mt-2 border-t border-slate-800">
+                  <UpgradeBtn name="Train Soldier" desc="20 Food, 10 Gold" count={gameState.population.army} action={trainArmy} disabled={gameState.buildings.barracks < 1 || gameState.resources.food < 20 || gameState.resources.gold < 10} />
+                </div>
+                
+                <h3 className="font-bold text-sm text-slate-400 pt-2 flex items-center"><Flag className="mr-1 w-4 h-4"/> Diplomacy & Legends</h3>
+                <UpgradeBtn name="Elf Alliance" desc="300 Gold (Team Attacks)" count={gameState.alliances.elves ? 'Allied' : 'None'} action={() => buyAlliance('elves')} disabled={gameState.resources.gold < 300 || gameState.alliances.elves} />
+                <UpgradeBtn name="Dwarf Alliance" desc="300 Gold (Team Attacks)" count={gameState.alliances.dwarves ? 'Allied' : 'None'} action={() => buyAlliance('dwarves')} disabled={gameState.resources.gold < 300 || gameState.alliances.dwarves} />
+                <UpgradeBtn name="Hire Knight Commander" desc="500 Gold (Hero Unit)" count={gameState.heroes.find(h=>h.id==='knight') ? 'Hired' : 'None'} action={hireHero} disabled={gameState.resources.gold < 500 || gameState.heroes.find(h=>h.id==='knight')} />
+              </div>
+            </div>
+
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-3 flex gap-2">
+              <div className="flex-1 relative">
+                <Key className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-500" />
+                <input type="text" placeholder="Enter secret code..." value={secretCode} onChange={e => setSecretCode(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-8 py-2 text-sm text-amber-400 focus:outline-none focus:border-amber-500 uppercase" />
+              </div>
+              <button onClick={redeemSecretCode} className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded text-sm font-bold transition-colors">Redeem</button>
+            </div>
+
+            <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 h-48 flex flex-col">
+              <h2 className="font-bold text-sm mb-2 text-slate-500">Event Log</h2>
+              <div className="flex-1 overflow-y-auto space-y-2 text-xs custom-scrollbar flex flex-col-reverse">
+                {logs.map((log, i) => {
+                  const colors = { info: 'text-slate-400', success: 'text-green-400', warning: 'text-yellow-400', danger: 'text-red-400' };
+                  return <div key={i} className={colors[log.type]}>[{log.day}] {log.message}</div>;
+                })}
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+      
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+      `}} />
+    </div>
+  );
+}
+
+function ResourceBadge({ icon: Icon, val, color }) {
+  return (
+    <div className="flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+      <Icon className={`w-4 h-4 ${color}`} />
+      <span className="font-bold">{val}</span>
+    </div>
+  );
+}
+
+function CommandRow({ icon: Icon, name, type, state, cmd, toggle, color, btnColor }) {
+  const isAuto = state.autoTasks[type];
+  return (
+    <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950 border border-slate-800">
+      <div className="flex items-center w-24">
+        <Icon className={`w-5 h-5 mr-2 ${color}`} />
+        <span className="font-semibold text-sm">{name}</span>
+      </div>
+      <div className="flex space-x-2">
+        <button onClick={() => cmd(type)} className={`px-3 py-1.5 rounded text-xs font-bold text-white shadow-sm active:scale-95 transition-all flex items-center ${btnColor}`}>
+          <Play size={12} className="mr-1 fill-current" /> Get
+        </button>
+        <button onClick={() => toggle(type)} className={`px-3 py-1.5 rounded text-xs font-bold shadow-sm transition-all flex items-center border ${isAuto ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'}`}>
+          Auto: {isAuto ? 'ON' : 'OFF'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function UpgradeBtn({ name, desc, count, action, disabled }) {
+  return (
+    <button onClick={action} disabled={disabled} className={`w-full text-left p-3 rounded-lg border flex justify-between items-center transition-all ${disabled ? 'bg-slate-950 border-slate-800 opacity-50 cursor-not-allowed' : 'bg-slate-800 border-slate-700 hover:border-amber-500/50 hover:bg-slate-750'}`}>
+      <div>
+        <div className="font-bold text-sm text-slate-200">{name} <span className="text-slate-500 ml-1">({count})</span></div>
+        <div className="text-xs text-slate-400 mt-0.5">{desc}</div>
+      </div>
+    </button>
+  );
+}
