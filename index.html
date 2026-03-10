@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Shield, Swords, TreePine, Mountain, Coins, Wheat, Users, 
-  Home, Hammer, Flag, Play, X, Skull, Star, Key, 
-  Globe, Send, Map as MapIcon, Castle, Loader
+  Users, Home, Hammer, Flag, Play, X, Key, Globe, Send, Loader 
 } from 'lucide-react';
 
 // --- Game Constants ---
@@ -35,9 +33,9 @@ const randomCoord = (minDist, maxDist) => {
 
 const generateNodes = () => {
   const nodes = [];
-  for(let i=0; i<12; i++) nodes.push({ id: `w${i}`, type: 'wood', ...randomCoord(200, 450) });
-  for(let i=0; i<8; i++) nodes.push({ id: `s${i}`, type: 'stone', ...randomCoord(150, 400) });
-  for(let i=0; i<10; i++) nodes.push({ id: `f${i}`, type: 'food', ...randomCoord(80, 250) });
+  for(let i=0; i<12; i++) nodes.push({ id: `w${i}`, type: 'wood', icon: '🌲', ...randomCoord(200, 450) });
+  for(let i=0; i<8; i++) nodes.push({ id: `s${i}`, type: 'stone', icon: '🪨', ...randomCoord(150, 400) });
+  for(let i=0; i<10; i++) nodes.push({ id: `f${i}`, type: 'food', icon: '🍞', ...randomCoord(80, 250) });
   return nodes;
 };
 
@@ -52,21 +50,19 @@ export default function App() {
   const [view, setView] = useState('kingdom'); // kingdom, world
   const [worldPlayers, setWorldPlayers] = useState({}); // Map of other players
   const [tradeTarget, setTradeTarget] = useState(null);
+  const [networkError, setNetworkError] = useState('');
 
   // --- Network Refs ---
   const peerRef = useRef(null);
-  const hostConnRef = useRef(null); // If I am a client, this is my connection to host
-  const clientConnsRef = useRef({}); // If I am the host, these are connections to clients
+  const hostConnRef = useRef(null);
+  const clientConnsRef = useRef({});
   
   // --- Game State ---
   const [gameState, setGameState] = useState(INITIAL_STATE);
   const [logs, setLogs] = useState([]);
   const [idleWorkerCount, setIdleWorkerCount] = useState(5);
   const [secretCode, setSecretCode] = useState('');
-  
   const [showTownModal, setShowTownModal] = useState(false);
-  const [workerTick, setWorkerTick] = useState(0);
-  const [invasionTick, setInvasionTick] = useState(0);
 
   // Mutable Engine State
   const gameStateRef = useRef(gameState);
@@ -83,16 +79,17 @@ export default function App() {
     }))
   );
 
-  // Dynamic PeerJS Loading
+  // Dynamic PeerJS Loading (Using CDNJS for stability)
   useEffect(() => {
     if (window.Peer) {
       setPeerReady(true);
       return;
     }
     const script = document.createElement('script');
-    script.src = 'https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js';
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js';
     script.async = true;
     script.onload = () => setPeerReady(true);
+    script.onerror = () => setNetworkError('Failed to load multiplayer engine. Check connection.');
     document.body.appendChild(script);
   }, []);
 
@@ -127,7 +124,7 @@ export default function App() {
     if (!window.Peer) return alert("Network library not loaded yet.");
     
     setAppState('loading');
-    const peer = new window.Peer(); // Using window.Peer dynamically
+    const peer = new window.Peer(); 
     
     peer.on('open', (id) => {
       setMyPeerId(id);
@@ -178,7 +175,7 @@ export default function App() {
 
       conn.on('data', (data) => handleIncomingData(data, conn.peer));
       conn.on('close', () => {
-        addLog("Lost connection to host!", "danger");
+        setLogs(curr => [{ day: gameStateRef.current.stats.day, message: "Lost connection to host!", type: 'danger' }, ...curr]);
       });
     });
 
@@ -319,7 +316,6 @@ export default function App() {
             y: BASE_COORD.y + (Math.random() * 20 - 10),
             speed: 25, dead: false
           });
-          setInvasionTick(t => t + 1); 
         }
 
         if (gameStateRef.current.alliances.elves && alliesRef.current.length < 10) {
@@ -359,16 +355,13 @@ export default function App() {
             
             if (isHero) {
               if (unit.name === 'Super Sorcerer Gojo' && Math.random() < 0.3) {
-                pendingResources.current.specialLogs.push(`🌌 Gojo used Cosmic Scope & Rapid Strike Burst!`);
+                pendingResources.current.specialLogs.push(`🌌 Gojo used Cosmic Scope!`);
                 invadersRef.current.forEach(inv => {
                   if (!inv.dead && Math.hypot(inv.x - unit.x, inv.y - unit.y) < 200) {
                     inv.dead = true;
                     pendingResources.current.invadersDefeated++;
-                    pendingResources.current.gold += 2;
                   }
                 });
-              } else if (unit.name === 'Knight Commander' && Math.random() < 0.2) {
-                 pendingResources.current.specialLogs.push(`⚔️ Knight Commander used Cleave!`);
               }
             } else if (!isAlly) {
               if (Math.random() < 0.15) {
@@ -515,7 +508,6 @@ export default function App() {
               speed: 4 + Math.random() * 4, dead: false
             });
           }
-          setInvasionTick(t => t + 1); 
           newLogs.push({ day: next.stats.day, message: `⚠️ INVASION! ${strength} raiders approaching!`, type: 'warning' });
         }
 
@@ -597,7 +589,6 @@ export default function App() {
       if (type === 'worker') {
         next.resources.food -= 50; next.resources.gold -= 20; next.townUpgrades.workerCount += 1;
         workersRef.current.push({ id: workersRef.current.length, x: BASE_COORD.x, y: BASE_COORD.y, state: 'idle', targetType: null, targetNode: null, gatherTimer: 0, inventory: null });
-        setWorkerTick(t => t + 1); 
       } else if (type === 'speed') {
         next.resources.wood -= 50; next.resources.stone -= 50; next.townUpgrades.workerSpeed += 0.5;
       } else if (type === 'wall') {
@@ -610,20 +601,16 @@ export default function App() {
   const sendGift = (resource, amount) => {
     if (!tradeTarget || gameState.resources[resource] < amount) return;
     
-    // Deduct locally
     setGameState(prev => ({
        ...prev, 
        resources: { ...prev.resources, [resource]: prev.resources[resource] - amount }
     }));
 
-    // Send to network
     const packet = { type: 'GIFT', resource, amount, fromName: playerName, to: tradeTarget.id };
     if (isHost) {
-      // I'm host, route it to client
       const conn = clientConnsRef.current[tradeTarget.id];
       if (conn) conn.send(packet);
     } else {
-      // Send to host to relay
       if (hostConnRef.current) hostConnRef.current.send(packet);
     }
 
@@ -634,15 +621,19 @@ export default function App() {
   // --- RENDER MENUS ---
   if (appState === 'menu') {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white p-4">
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white p-4 font-sans">
         <div className="bg-slate-900 border border-amber-600/30 p-8 rounded-xl max-w-md w-full shadow-2xl space-y-6">
           <div className="text-center">
-            <Castle className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+            <div className="text-6xl mb-4">🏰</div>
             <h1 className="text-3xl font-bold text-amber-500 tracking-widest">KINGDOM BATTLES</h1>
             <p className="text-slate-400 mt-2 text-sm">Multiplayer Edition</p>
           </div>
 
-          {!peerReady ? (
+          {networkError ? (
+            <div className="text-red-500 text-center py-4 bg-red-900/20 rounded font-bold text-sm">
+              {networkError}
+            </div>
+          ) : !peerReady ? (
             <div className="flex flex-col items-center justify-center py-8 text-amber-400">
                <Loader className="w-8 h-8 animate-spin mb-4" />
                <p className="text-sm font-bold">Establishing Network Links...</p>
@@ -687,7 +678,7 @@ export default function App() {
   }
 
   if (appState === 'loading') {
-    return <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white text-xl animate-pulse">
+    return <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white text-xl animate-pulse font-sans">
        <Loader className="w-10 h-10 mb-4 animate-spin text-amber-500" />
        Connecting to Realm...
     </div>;
@@ -710,12 +701,12 @@ export default function App() {
               )}
             </div>
           </div>
-          <div className="flex space-x-4">
-            <ResourceBadge icon={TreePine} val={gameState.resources.wood} color="text-green-500" />
-            <ResourceBadge icon={Mountain} val={gameState.resources.stone} color="text-gray-400" />
-            <ResourceBadge icon={Wheat} val={gameState.resources.food} color="text-yellow-500" />
-            <ResourceBadge icon={Coins} val={gameState.resources.gold} color="text-amber-400" />
-            <ResourceBadge icon={Swords} val={gameState.population.army} color="text-red-500" />
+          <div className="flex flex-wrap gap-3">
+            <ResourceBadge icon="🌲" val={gameState.resources.wood} />
+            <ResourceBadge icon="🪨" val={gameState.resources.stone} />
+            <ResourceBadge icon="🍞" val={gameState.resources.food} />
+            <ResourceBadge icon="💰" val={gameState.resources.gold} />
+            <ResourceBadge icon="⚔️" val={gameState.population.army} />
           </div>
         </div>
 
@@ -737,80 +728,61 @@ export default function App() {
             
             {view === 'kingdom' ? (
               <>
-                {/* Local Kingdom Map */}
                 <div className="absolute inset-0 bg-[#1a3a29] opacity-50" />
                 
                 {mapNodes.current.map(node => (
-                  <div key={node.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-transform hover:scale-110" style={{ left: `${(node.x/MAP_SIZE)*100}%`, top: `${(node.y/MAP_SIZE)*100}%` }}>
-                    {node.type === 'wood' && <div className="w-6 h-6 bg-green-700 rounded-full border-2 border-green-900 flex items-center justify-center"><TreePine size={14} className="text-green-300"/></div>}
-                    {node.type === 'stone' && <div className="w-5 h-5 bg-gray-500 rounded border-2 border-gray-700 flex items-center justify-center"><Mountain size={12} className="text-gray-300"/></div>}
-                    {node.type === 'food' && <div className="w-4 h-4 bg-emerald-600 rounded-full border border-emerald-800 flex items-center justify-center"><div className="w-1.5 h-1.5 bg-red-400 rounded-full"/></div>}
+                  <div key={node.id} className="absolute transform -translate-x-1/2 -translate-y-1/2 text-2xl transition-transform hover:scale-125" style={{ left: `${(node.x/MAP_SIZE)*100}%`, top: `${(node.y/MAP_SIZE)*100}%` }}>
+                    {node.icon}
                   </div>
                 ))}
 
                 <div className="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer hover:scale-105 transition-transform" style={{ left: `${(BASE_COORD.x/MAP_SIZE)*100}%`, top: `${(BASE_COORD.y/MAP_SIZE)*100}%`, zIndex: 10 }} onClick={() => setShowTownModal(true)}>
-                  <div className="w-16 h-16 bg-slate-800 border-4 border-slate-700 hover:border-amber-500 rounded-lg flex items-center justify-center shadow-2xl relative">
-                    <Home size={32} className="text-amber-500" />
+                  <div className="w-16 h-16 bg-slate-800 border-4 border-slate-700 hover:border-amber-500 rounded-lg flex items-center justify-center shadow-2xl relative text-3xl">
+                    🏰
                   </div>
                 </div>
 
                 {workersRef.current.map(worker => (
-                  <div key={worker.id} id={`worker-${worker.id}`} className="absolute w-4 h-4 bg-amber-400 rounded-full border border-amber-600 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center shadow" style={{ zIndex: 20 }}>
-                    <div className="w-1.5 h-1.5 bg-slate-900 rounded-full opacity-50"/>
-                  </div>
+                  <div key={worker.id} id={`worker-${worker.id}`} className="absolute text-xl transform -translate-x-1/2 -translate-y-1/2" style={{ zIndex: 20 }}>🧑‍🌾</div>
                 ))}
                 {invadersRef.current.map(invader => (
-                  <div key={`invader-${invader.id}`} id={`invader-${invader.id}`} className="absolute w-4 h-4 bg-red-600 rounded-sm border border-red-800 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center" style={{ zIndex: 25 }}>
-                    <Skull size={10} className="text-red-200" />
-                  </div>
+                  <div key={`invader-${invader.id}`} id={`invader-${invader.id}`} className="absolute text-xl transform -translate-x-1/2 -translate-y-1/2" style={{ zIndex: 25 }}>💀</div>
                 ))}
                 {soldiersRef.current.map(soldier => (
-                  <div key={soldier.id} id={`soldier-${soldier.id}`} className="absolute w-4 h-4 bg-blue-500 rounded-full border border-blue-700 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center" style={{ zIndex: 24 }}>
-                    <Shield size={10} className="text-blue-100" />
-                  </div>
+                  <div key={soldier.id} id={`soldier-${soldier.id}`} className="absolute text-lg transform -translate-x-1/2 -translate-y-1/2" style={{ zIndex: 24 }}>🛡️</div>
                 ))}
                 {alliesRef.current.map(ally => (
-                  <div key={ally.id} id={ally.id} className={`absolute w-4 h-4 rounded-full border transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center ${ally.type === 'elf' ? 'bg-green-500 border-green-700' : 'bg-gray-400 border-gray-600'}`} style={{ zIndex: 23 }}>
-                    <Swords size={10} className="text-white" />
+                  <div key={ally.id} id={ally.id} className="absolute text-lg transform -translate-x-1/2 -translate-y-1/2" style={{ zIndex: 23 }}>
+                    {ally.type === 'elf' ? '🧝' : '🧔'}
                   </div>
                 ))}
                 {heroesRef.current.map(hero => (
-                  <div key={hero.id} id={hero.id} className="absolute w-6 h-6 bg-purple-500 rounded-full border-2 border-purple-300 transform -translate-x-1/2 -translate-y-1/2 flex items-center justify-center shadow-[0_0_10px_rgba(168,85,247,0.8)]" style={{ zIndex: 26 }}>
-                    <Star size={14} className="text-white fill-white" />
-                  </div>
+                  <div key={hero.id} id={hero.id} className="absolute text-2xl transform -translate-x-1/2 -translate-y-1/2 drop-shadow-[0_0_10px_rgba(168,85,247,0.8)]" style={{ zIndex: 26 }}>⭐</div>
                 ))}
               </>
             ) : (
               <>
-                {/* Global World Map */}
                 <div className="absolute inset-0 bg-[#0f172a]" />
                 <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(#334155 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
                 
                 <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
-                  <h2 className="text-xl font-bold text-blue-400 flex items-center"><MapIcon className="mr-2" /> Global Realm</h2>
+                  <h2 className="text-xl font-bold text-blue-400 flex items-center"><Globe className="mr-2" /> Global Realm</h2>
                   <span className="text-xs text-slate-400 bg-slate-900/80 px-3 py-1 rounded-full border border-slate-700">{Object.keys(worldPlayers).length + 1} Kingdoms Online</span>
                 </div>
 
-                {/* Render Other Players */}
                 <div className="absolute inset-0 flex flex-wrap justify-center items-center gap-12 p-12 overflow-y-auto">
-                   {/* Self */}
                    <div className="flex flex-col items-center group">
-                      <div className="w-16 h-16 bg-amber-600/20 border-2 border-amber-500 rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.3)]">
-                         <Castle size={32} className="text-amber-500" />
-                      </div>
+                      <div className="w-16 h-16 bg-amber-600/20 border-2 border-amber-500 rounded-xl flex items-center justify-center text-3xl shadow-[0_0_15px_rgba(245,158,11,0.3)]">🏰</div>
                       <span className="mt-2 font-bold text-amber-400 text-sm">{playerName} (You)</span>
                    </div>
 
-                   {/* Peers */}
                    {Object.entries(worldPlayers).map(([id, pState]) => {
-                     if (id === myPeerId) return null; // safety check
+                     if (id === myPeerId) return null; 
                      return (
                        <div key={id} className="flex flex-col items-center cursor-pointer group" onClick={() => setTradeTarget({ id, name: pState.name })}>
-                          <div className="w-16 h-16 bg-blue-600/20 border-2 border-blue-500 rounded-xl flex items-center justify-center transition-transform group-hover:-translate-y-2 group-hover:shadow-[0_0_15px_rgba(59,130,246,0.5)]">
-                             <Castle size={32} className="text-blue-400" />
-                          </div>
+                          <div className="w-16 h-16 bg-blue-600/20 border-2 border-blue-500 rounded-xl flex items-center justify-center text-3xl transition-transform group-hover:-translate-y-2 group-hover:shadow-[0_0_15px_rgba(59,130,246,0.5)]">🏰</div>
                           <span className="mt-2 font-bold text-slate-300 text-sm group-hover:text-white transition-colors">{pState.name}</span>
-                          <span className="text-xs text-slate-500 flex items-center mt-1"><Swords size={10} className="mr-1"/> {pState.army} Army</span>
+                          <span className="text-xs text-slate-500 flex items-center mt-1">⚔️ {pState.army} Army</span>
                        </div>
                      )
                    })}
@@ -828,9 +800,9 @@ export default function App() {
                   </div>
                   
                   <div className="space-y-3">
-                    <UpgradeBtn name="Hire Worker" desc="50 Food, 20 Gold" count={`${gameState.townUpgrades.workerCount} Workers`} action={() => buyTownUpgrade('worker')} disabled={gameState.resources.food < 50 || gameState.resources.gold < 20} />
-                    <UpgradeBtn name="Worker Speed" desc="50 Wood, 50 Stone" count={`Lv ${gameState.townUpgrades.workerSpeed * 2 - 1}`} action={() => buyTownUpgrade('speed')} disabled={gameState.resources.wood < 50 || gameState.resources.stone < 50} />
-                    <UpgradeBtn name="Fortify Walls" desc="100 Stone, 50 Gold" count={`Lv ${gameState.townUpgrades.wallDefense * 2 - 1}`} action={() => buyTownUpgrade('wall')} disabled={gameState.resources.stone < 100 || gameState.resources.gold < 50} />
+                    <UpgradeBtn name="Hire Worker 🧑‍🌾" desc="50 🍞, 20 💰" count={`${gameState.townUpgrades.workerCount} Workers`} action={() => buyTownUpgrade('worker')} disabled={gameState.resources.food < 50 || gameState.resources.gold < 20} />
+                    <UpgradeBtn name="Worker Speed ⚡" desc="50 🌲, 50 🪨" count={`Lv ${gameState.townUpgrades.workerSpeed * 2 - 1}`} action={() => buyTownUpgrade('speed')} disabled={gameState.resources.wood < 50 || gameState.resources.stone < 50} />
+                    <UpgradeBtn name="Fortify Walls 🧱" desc="100 🪨, 50 💰" count={`Lv ${gameState.townUpgrades.wallDefense * 2 - 1}`} action={() => buyTownUpgrade('wall')} disabled={gameState.resources.stone < 100 || gameState.resources.gold < 50} />
                   </div>
                 </div>
               </div>
@@ -848,16 +820,16 @@ export default function App() {
                   
                   <div className="grid grid-cols-2 gap-2">
                     <button onClick={() => sendGift('wood', 50)} disabled={gameState.resources.wood < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
-                       <TreePine size={20} className="text-green-500 mb-1" /> <span className="text-xs font-bold">50 Wood</span>
+                       <span className="text-2xl mb-1">🌲</span> <span className="text-xs font-bold">50 Wood</span>
                     </button>
                     <button onClick={() => sendGift('stone', 50)} disabled={gameState.resources.stone < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
-                       <Mountain size={20} className="text-gray-400 mb-1" /> <span className="text-xs font-bold">50 Stone</span>
+                       <span className="text-2xl mb-1">🪨</span> <span className="text-xs font-bold">50 Stone</span>
                     </button>
                     <button onClick={() => sendGift('food', 50)} disabled={gameState.resources.food < 50} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
-                       <Wheat size={20} className="text-yellow-500 mb-1" /> <span className="text-xs font-bold">50 Food</span>
+                       <span className="text-2xl mb-1">🍞</span> <span className="text-xs font-bold">50 Food</span>
                     </button>
                     <button onClick={() => sendGift('gold', 20)} disabled={gameState.resources.gold < 20} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 p-3 rounded flex flex-col items-center justify-center border border-slate-700 transition">
-                       <Coins size={20} className="text-amber-400 mb-1" /> <span className="text-xs font-bold">20 Gold</span>
+                       <span className="text-2xl mb-1">💰</span> <span className="text-xs font-bold">20 Gold</span>
                     </button>
                   </div>
                 </div>
@@ -871,25 +843,25 @@ export default function App() {
             <div className="bg-slate-900 rounded-xl border border-slate-800 p-4">
               <h2 className="font-bold text-lg mb-4 flex items-center"><Users className="mr-2 text-blue-400" /> Worker Commands</h2>
               <div className="space-y-3">
-                <CommandRow icon={TreePine} name="Wood" type="wood" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-green-500" btnColor="bg-green-700 hover:bg-green-600" />
-                <CommandRow icon={Mountain} name="Stone" type="stone" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-gray-400" btnColor="bg-gray-700 hover:bg-gray-600" />
-                <CommandRow icon={Wheat} name="Food" type="food" state={gameState} cmd={commandWorker} toggle={toggleAuto} color="text-yellow-500" btnColor="bg-yellow-700 hover:bg-yellow-600" />
+                <CommandRow icon="🌲" name="Wood" type="wood" state={gameState} cmd={commandWorker} toggle={toggleAuto} />
+                <CommandRow icon="🪨" name="Stone" type="stone" state={gameState} cmd={commandWorker} toggle={toggleAuto} />
+                <CommandRow icon="🍞" name="Food" type="food" state={gameState} cmd={commandWorker} toggle={toggleAuto} />
               </div>
             </div>
 
             <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 flex-1">
               <h2 className="font-bold text-lg mb-4 flex items-center"><Hammer className="mr-2 text-amber-600" /> Upgrades & Army</h2>
               <div className="space-y-2 h-48 overflow-y-auto custom-scrollbar pr-1">
-                <UpgradeBtn name="Barracks" desc="100 Wood, 50 Stone" count={gameState.buildings.barracks} action={buildBarracks} disabled={gameState.resources.wood < 100 || gameState.resources.stone < 50} />
-                <UpgradeBtn name="Stone Wall" desc="50 Stone (+15 Def)" count={gameState.buildings.wall} action={buildWall} disabled={gameState.resources.stone < 50} />
+                <UpgradeBtn name="Barracks ⛺" desc="100 🌲, 50 🪨" count={gameState.buildings.barracks} action={buildBarracks} disabled={gameState.resources.wood < 100 || gameState.resources.stone < 50} />
+                <UpgradeBtn name="Stone Wall 🧱" desc="50 🪨 (+15 Def)" count={gameState.buildings.wall} action={buildWall} disabled={gameState.resources.stone < 50} />
                 <div className="pt-2 mt-2 border-t border-slate-800">
-                  <UpgradeBtn name="Train Soldier" desc="20 Food, 10 Gold" count={gameState.population.army} action={trainArmy} disabled={gameState.buildings.barracks < 1 || gameState.resources.food < 20 || gameState.resources.gold < 10} />
+                  <UpgradeBtn name="Train Soldier 🛡️" desc="20 🍞, 10 💰" count={gameState.population.army} action={trainArmy} disabled={gameState.buildings.barracks < 1 || gameState.resources.food < 20 || gameState.resources.gold < 10} />
                 </div>
                 
                 <h3 className="font-bold text-sm text-slate-400 pt-2 flex items-center"><Flag className="mr-1 w-4 h-4"/> Diplomacy & Legends</h3>
-                <UpgradeBtn name="Elf Alliance" desc="300 Gold (Team Attacks)" count={gameState.alliances.elves ? 'Allied' : 'None'} action={() => buyAlliance('elves')} disabled={gameState.resources.gold < 300 || gameState.alliances.elves} />
-                <UpgradeBtn name="Dwarf Alliance" desc="300 Gold (Team Attacks)" count={gameState.alliances.dwarves ? 'Allied' : 'None'} action={() => buyAlliance('dwarves')} disabled={gameState.resources.gold < 300 || gameState.alliances.dwarves} />
-                <UpgradeBtn name="Hire Knight Commander" desc="500 Gold (Hero Unit)" count={gameState.heroes.find(h=>h.id==='knight') ? 'Hired' : 'None'} action={hireHero} disabled={gameState.resources.gold < 500 || gameState.heroes.find(h=>h.id==='knight')} />
+                <UpgradeBtn name="Elf Alliance 🧝" desc="300 💰 (Team Attacks)" count={gameState.alliances.elves ? 'Allied' : 'None'} action={() => buyAlliance('elves')} disabled={gameState.resources.gold < 300 || gameState.alliances.elves} />
+                <UpgradeBtn name="Dwarf Alliance 🧔" desc="300 💰 (Team Attacks)" count={gameState.alliances.dwarves ? 'Allied' : 'None'} action={() => buyAlliance('dwarves')} disabled={gameState.resources.gold < 300 || gameState.alliances.dwarves} />
+                <UpgradeBtn name="Hire Knight ⭐" desc="500 💰 (Hero Unit)" count={gameState.heroes.find(h=>h.id==='knight') ? 'Hired' : 'None'} action={hireHero} disabled={gameState.resources.gold < 500 || gameState.heroes.find(h=>h.id==='knight')} />
               </div>
             </div>
 
@@ -924,25 +896,25 @@ export default function App() {
   );
 }
 
-function ResourceBadge({ icon: Icon, val, color }) {
+function ResourceBadge({ icon, val }) {
   return (
     <div className="flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-      <Icon className={`w-4 h-4 ${color}`} />
+      <span className="text-lg">{icon}</span>
       <span className="font-bold">{val}</span>
     </div>
   );
 }
 
-function CommandRow({ icon: Icon, name, type, state, cmd, toggle, color, btnColor }) {
+function CommandRow({ icon, name, type, state, cmd, toggle }) {
   const isAuto = state.autoTasks[type];
   return (
     <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950 border border-slate-800">
       <div className="flex items-center w-24">
-        <Icon className={`w-5 h-5 mr-2 ${color}`} />
+        <span className="text-xl mr-2">{icon}</span>
         <span className="font-semibold text-sm">{name}</span>
       </div>
       <div className="flex space-x-2">
-        <button onClick={() => cmd(type)} className={`px-3 py-1.5 rounded text-xs font-bold text-white shadow-sm active:scale-95 transition-all flex items-center ${btnColor}`}>
+        <button onClick={() => cmd(type)} className={`px-3 py-1.5 rounded text-xs font-bold text-white shadow-sm active:scale-95 transition-all flex items-center bg-slate-700 hover:bg-slate-600`}>
           <Play size={12} className="mr-1 fill-current" /> Get
         </button>
         <button onClick={() => toggle(type)} className={`px-3 py-1.5 rounded text-xs font-bold shadow-sm transition-all flex items-center border ${isAuto ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'}`}>
