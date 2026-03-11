@@ -1,836 +1,762 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
-import { Users, Shield, Globe, Power, TreePine, Cuboid, Sword, Skull } from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini Kingdom</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.5); border-radius: 4px; }
+  </style>
+</head>
+<body class="min-h-[100dvh] bg-slate-950 text-slate-200 font-sans flex flex-col select-none overflow-x-hidden">
 
-// --- FIREBASE SETUP (Background only, no blocking) ---
-let db = null;
-let auth = null;
-let appId = 'default-kingdom-app';
-try {
-  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-  if (firebaseConfig) {
-    const app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    db = getFirestore(app);
-    appId = typeof __app_id !== 'undefined' ? __app_id : appId;
-  }
-} catch (e) {
-  console.log("Firebase not configured, running locally.");
-}
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast" class="fixed top-20 left-1/2 transform -translate-x-1/2 bg-amber-400 text-amber-950 font-black px-6 py-3 rounded-xl shadow-2xl z-50 transition-opacity duration-300 opacity-0 pointer-events-none border-2 border-amber-500 hidden">
+  </div>
 
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [cloudStatus, setCloudStatus] = useState("Local Only");
-  const [renderTrigger, setRenderTrigger] = useState(0); // Forces Map UI to update
-  const [invasionTimer, setInvasionTimer] = useState(45);
-  const [toastMessage, setToastMessage] = useState("");
-  
-  // React UI State
-  const [uiResources, setUiResources] = useState({ wood: 100, stone: 50, food: 200, gold: 50 });
-  const [uiWorkers, setUiWorkers] = useState(3);
-  const [uiSoldiers, setUiSoldiers] = useState(0);
-  const [uiWorkerBoost, setUiWorkerBoost] = useState(false);
-  const [autoTasks, setAutoTasks] = useState({ wood: false, stone: false, food: false, gold: false });
-  const [worldId, setWorldId] = useState("");
-  const [activeWorld, setActiveWorld] = useState("");
-  const [neighbors, setNeighbors] = useState([]);
+  <!-- HEADER -->
+  <header class="bg-slate-900 border-b border-slate-800 p-3 shrink-0">
+    <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
+      <div class="flex items-center gap-3">
+        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-amber-500"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+        <h1 class="text-xl md:text-2xl font-bold text-white uppercase tracking-wider">Mini Kingdom</h1>
+        <span id="cloud-status" class="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">
+          Local Only
+        </span>
+      </div>
+      
+      <div class="flex gap-2 md:gap-4 overflow-x-auto pb-1 md:pb-0">
+        <div class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+          <span>🌲</span> <span id="ui-wood" class="font-bold w-10 text-right">100</span>
+        </div>
+        <div class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+          <span>🪨</span> <span id="ui-stone" class="font-bold w-10 text-right">50</span>
+        </div>
+        <div class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+          <span>🍒</span> <span id="ui-food" class="font-bold w-10 text-right">200</span>
+        </div>
+        <div class="flex items-center gap-2 bg-amber-950/50 px-3 py-1.5 rounded-lg border border-amber-900/50">
+          <span>💰</span> <span id="ui-gold" class="font-bold text-amber-500 w-10 text-right">50</span>
+        </div>
+      </div>
+    </div>
+  </header>
 
-  // --- GAME ENGINE STATE (Mutable, bypasses React render for performance) ---
-  const gameRef = useRef({
-    resources: { wood: 100, stone: 50, food: 200, gold: 50 },
-    autoTasks: { wood: false, stone: false, food: false, gold: false },
-    nodes: [],
-    workers: [],
-    soldiers: [],
-    heroes: [],
-    enemies: [],
-    usedCodes: [],
-    workerBoost: false,
-    invasionCount: 0,
-    nextInvasion: Date.now() + 45000,
-    needsRender: false,
-    lastTick: Date.now()
-  });
+  <!-- MAIN GRID -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-4 gap-4">
+    
+    <!-- LEFT PANEL: Controls -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 p-4 flex flex-col gap-4">
+      <h2 class="font-bold text-lg text-amber-500 flex items-center gap-2 border-b border-slate-800 pb-2">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Town Controls
+      </h2>
+      
+      <div class="space-y-3 flex-1">
+        <p class="text-xs text-slate-400">Enable AUTO to command your workers to harvest.</p>
+        
+        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
+          <span class="font-bold text-sm flex items-center gap-2">🌲 Wood</span>
+          <button id="btn-auto-wood" class="px-3 py-1 rounded text-xs font-bold transition-colors bg-slate-800 text-slate-400">AUTO OFF</button>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
+          <span class="font-bold text-sm flex items-center gap-2">🪨 Stone</span>
+          <button id="btn-auto-stone" class="px-3 py-1 rounded text-xs font-bold transition-colors bg-slate-800 text-slate-400">AUTO OFF</button>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
+          <span class="font-bold text-sm flex items-center gap-2">🍒 Food</span>
+          <button id="btn-auto-food" class="px-3 py-1 rounded text-xs font-bold transition-colors bg-slate-800 text-slate-400">AUTO OFF</button>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
+          <span class="font-bold text-sm flex items-center gap-2">🪙 Gold</span>
+          <button id="btn-auto-gold" class="px-3 py-1 rounded text-xs font-bold transition-colors bg-slate-800 text-slate-400">AUTO OFF</button>
+        </div>
+      </div>
 
-  // 1. GENERATE MAP & WORKERS ONCE
-  useEffect(() => {
-    if (gameRef.current.nodes.length > 0) return;
+      <div class="flex flex-col gap-2 mt-4">
+        <button id="btn-hire-worker" class="w-full bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold p-3 rounded-lg transition-colors flex flex-col items-center">
+          <span>Hire Worker 🧑‍🌾 <span id="ui-worker-boost" class="hidden">⚡</span> (<span id="ui-workers">3</span>)</span>
+          <span class="text-xs font-normal mt-1 opacity-80">Cost: 50 🍒, 20 💰</span>
+        </button>
 
-    // Generate Map Nodes
-    const newNodes = [];
-    const randomCoord = (minR, maxR) => {
-      const angle = Math.random() * Math.PI * 2;
-      const r = minR + Math.random() * (maxR - minR);
-      return { x: 500 + Math.cos(angle) * r, y: 500 + Math.sin(angle) * r };
-    };
+        <button id="btn-hire-soldier" class="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold p-3 rounded-lg transition-colors flex flex-col items-center">
+          <span>Train Soldier 🛡️ (<span id="ui-soldiers">0</span>)</span>
+          <span class="text-xs font-normal mt-1 opacity-80">Cost: 30 🍒, 30 💰</span>
+        </button>
+      </div>
+    </div>
 
-    const addNodes = (count, type, emoji, minR, maxR) => {
-      for(let i=0; i<count; i++) {
-        const pos = randomCoord(minR, maxR);
-        newNodes.push({ id: `${type}_${i}`, type, emoji, x: pos.x, y: pos.y });
+    <!-- CENTER PANEL: THE MAP -->
+    <div id="map-container" class="lg:col-span-2 bg-[#166534] rounded-xl border-4 border-slate-800 overflow-hidden relative shadow-inner min-h-[400px]">
+      
+      <!-- Invasion Warning Timer -->
+      <div id="invasion-banner" class="absolute top-2 left-2 z-40 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-700 flex items-center gap-2">
+        <svg id="invasion-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-slate-400"><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M8 20v2h8v-2"/><path d="m12.5 17-.5-1-.5 1h1z"/><path d="M16 20a2 2 0 0 0 1.56-3.25 8 8 0 1 0-11.12 0A2 2 0 0 0 8 20"/></svg>
+        <span id="invasion-timer" class="text-slate-300">Invasion in 45s</span>
+      </div>
+
+      <!-- Town Center -->
+      <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 flex items-center justify-center">
+        <div class="w-24 h-24 bg-[#854d0e] rounded-full absolute opacity-50"></div>
+        <span class="text-6xl relative z-10 filter drop-shadow-xl">🏰</span>
+      </div>
+      
+      <!-- Dynamic entities will be injected here via JS -->
+    </div>
+
+    <!-- RIGHT PANEL: Multiplayer -->
+    <div class="bg-indigo-950/40 rounded-xl border border-indigo-900/50 p-4 flex flex-col">
+      <h2 class="font-bold text-lg text-indigo-400 flex items-center gap-2 border-b border-indigo-900/50 pb-2 mb-4">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+        World Lobby
+      </h2>
+      
+      <form id="lobby-form" class="mb-4">
+        <div class="flex gap-2">
+          <input 
+            type="text" id="world-input"
+            placeholder="Lobby name or Secret Code..."
+            class="flex-1 bg-slate-900 border border-indigo-800 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+          />
+          <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-2 rounded text-sm shrink-0">
+            Join
+          </button>
+        </div>
+      </form>
+
+      <div id="lobby-content" class="flex-1 flex flex-col min-h-0">
+         <div class="flex-1 flex flex-col items-center justify-center text-center text-indigo-300/50">
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2 opacity-50"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+            <p class="text-xs">Enter a world name to share stats with friends.</p>
+         </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- GAME LOGIC SCRIPT -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+    // --- FIREBASE CONFIGURATION ---
+    let db = null;
+    let auth = null;
+    let appId = 'default-kingdom-app';
+    let user = null;
+    let unsubLobby = null;
+
+    try {
+      const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+      if (configStr) {
+        const firebaseConfig = JSON.parse(configStr);
+        const app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+        appId = typeof __app_id !== 'undefined' ? __app_id : appId;
       }
+    } catch (e) {
+      console.log("Firebase not configured, running locally.");
+    }
+
+    // --- GAME ENGINE STATE ---
+    const game = {
+      resources: { wood: 100, stone: 50, food: 200, gold: 50 },
+      autoTasks: { wood: false, stone: false, food: false, gold: false },
+      nodes: [],
+      workers: [],
+      soldiers: [],
+      heroes: [],
+      enemies: [],
+      usedCodes: [],
+      workerBoost: false,
+      invasionCount: 0,
+      nextInvasion: Date.now() + 45000,
+      lastTick: Date.now(),
+      activeWorld: "",
+      neighbors: []
     };
 
-    addNodes(15, 'wood', '🌲', 150, 450);
-    addNodes(10, 'stone', '🪨', 120, 400);
-    addNodes(12, 'food', '🍒', 100, 300);
-    addNodes(8, 'gold', '🪙', 150, 450);
-    gameRef.current.nodes = newNodes;
+    const mapContainer = document.getElementById('map-container');
 
-    // Generate Initial Workers
-    for(let i=0; i<3; i++) {
-      gameRef.current.workers.push({
-        id: `w_${Math.random()}`,
-        x: 500 + (Math.random()*40-20),
-        y: 500 + (Math.random()*40-20),
+    // --- DOM ELEMENT CREATION HELPERS ---
+    function createDOMElement(id, content, extraClasses = '') {
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        // Using setAttribute instead of className to prevent readonly errors in strict mode
+        el.setAttribute('class', `absolute transform -translate-x-1/2 -translate-y-1/2 ${extraClasses}`);
+        mapContainer.appendChild(el);
+      }
+      el.innerHTML = content;
+      return el;
+    }
+
+    function removeDOMElement(id) {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    }
+
+    // --- MAP INITIALIZATION ---
+    function initMap() {
+      const randomCoord = (minR, maxR) => {
+        const angle = Math.random() * Math.PI * 2;
+        const r = minR + Math.random() * (maxR - minR);
+        return { x: 500 + Math.cos(angle) * r, y: 500 + Math.sin(angle) * r };
+      };
+
+      const addNodes = (count, type, emoji, minR, maxR) => {
+        for(let i=0; i<count; i++) {
+          const pos = randomCoord(minR, maxR);
+          const id = `node_${type}_${i}`;
+          game.nodes.push({ id, type, emoji, x: pos.x, y: pos.y });
+          const el = createDOMElement(id, emoji, 'z-10 text-2xl filter drop-shadow-md');
+          el.style.setProperty('left', `${(pos.x/1000)*100}%`);
+          el.style.setProperty('top', `${(pos.y/1000)*100}%`);
+        }
+      };
+
+      addNodes(15, 'wood', '🌲', 150, 450);
+      addNodes(10, 'stone', '🪨', 120, 400);
+      addNodes(12, 'food', '🍒', 100, 300);
+      addNodes(8, 'gold', '🪙', 150, 450);
+
+      for(let i=0; i<3; i++) {
+        addWorker();
+      }
+    }
+
+    function addWorker() {
+      const id = `w_${Math.random()}`;
+      game.workers.push({
+        id, x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20),
         state: 'idle', target: null, inventory: null, timer: 0
       });
+      createDOMElement(id, `🧑‍🌾<span id="${id}_inv" class="absolute -top-3 -right-2 text-sm hidden filter drop-shadow-md"></span>`, 'z-30 text-xl');
     }
-  }, []);
 
-  // 2. MAIN GAME LOOP (Updates DOM directly for 60fps)
-  useEffect(() => {
-    let animationId;
-    const speed = 120; // Movement speed
+    function addSoldier() {
+      const id = `s_${Math.random()}`;
+      game.soldiers.push({ id, x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20) });
+      createDOMElement(id, '🛡️', 'z-30 text-xl drop-shadow-lg');
+    }
 
-    const loop = () => {
+    function addHero(type, emoji) {
+      const id = `h_${Math.random()}`;
+      game.heroes.push({ id, type, emoji, x: 500, y: 500 });
+      createDOMElement(id, emoji, 'z-40 text-3xl drop-shadow-2xl');
+    }
+
+    // --- MAIN GAME LOOP ---
+    function gameLoop() {
       const now = Date.now();
-      const dt = Math.min((now - gameRef.current.lastTick) / 1000, 0.1);
-      gameRef.current.lastTick = now;
+      const dt = Math.min((now - game.lastTick) / 1000, 0.1);
+      game.lastTick = now;
+      const speed = 120;
 
-      // --- 1. ENEMY SPAWN LOGIC ---
-      if (now > gameRef.current.nextInvasion) {
-        gameRef.current.nextInvasion = now + 45000; // Next invasion in 45s
-        gameRef.current.invasionCount = (gameRef.current.invasionCount || 0) + 1;
+      // 1. INVASION SPAWN LOGIC
+      if (now > game.nextInvasion) {
+        game.nextInvasion = now + 45000;
+        game.invasionCount++;
         
-        const isBossWave = gameRef.current.invasionCount % 5 === 0;
+        const isBossWave = game.invasionCount % 5 === 0;
 
         if (isBossWave) {
           const angle = Math.random() * Math.PI * 2;
-          gameRef.current.enemies.push({
-            id: `e_${Math.random()}`,
-            x: 500 + Math.cos(angle) * 600, // Spawn slightly off-screen
-            y: 500 + Math.sin(angle) * 600,
-            isBoss: true,
-            hp: 15, // Boss HP
-            size: 2,
-            emoji: '👹'
-          });
+          const id = `e_${Math.random()}`;
+          const e = { id, x: 500 + Math.cos(angle)*600, y: 500 + Math.sin(angle)*600, isBoss: true, hp: 15, maxHp: 15, size: 2, emoji: '👹' };
+          game.enemies.push(e);
+          createDOMElement(id, getBossHTML(e), 'z-30 text-5xl drop-shadow-lg');
         } else {
           const baseCount = 1 + Math.floor(Math.random() * 3);
-          const scaleCount = Math.floor(gameRef.current.invasionCount / 2);
-          const count = baseCount + scaleCount; // Scales difficulty over time!
+          const scaleCount = Math.floor(game.invasionCount / 2);
+          const count = baseCount + scaleCount;
           
           for(let i=0; i<count; i++) {
             const angle = Math.random() * Math.PI * 2;
-            gameRef.current.enemies.push({
-              id: `e_${Math.random()}`,
-              x: 500 + Math.cos(angle) * 600,
-              y: 500 + Math.sin(angle) * 600,
-              isBoss: false,
-              hp: 1,
-              size: 1,
-              emoji: '👺'
-            });
+            const id = `e_${Math.random()}`;
+            const e = { id, x: 500 + Math.cos(angle)*600, y: 500 + Math.sin(angle)*600, isBoss: false, hp: 1, size: 1, emoji: '👺' };
+            game.enemies.push(e);
+            createDOMElement(id, '👺', 'z-30 text-2xl drop-shadow-lg');
           }
         }
-        gameRef.current.needsRender = true;
       }
 
-      // --- 2. ENEMY MOVEMENT & COMBAT ---
-      let survivingEnemies = [];
-      let survivingSoldiers = [...gameRef.current.soldiers];
-      let survivingWorkers = [...gameRef.current.workers];
+      function getBossHTML(e) {
+        return `👹<div class="absolute -bottom-2 left-1/2 transform -translate-x-1/2 w-10 h-1.5 bg-red-950 rounded-full overflow-hidden border border-slate-800"><div id="${e.id}_hp" class="h-full bg-red-500" style="width: ${(e.hp/e.maxHp)*100}%"></div></div>`;
+      }
 
-      gameRef.current.enemies.forEach(e => {
+      // 2. ENEMY COMBAT & MOVEMENT
+      let survivingEnemies = [];
+      let survivingSoldiers = [...game.soldiers];
+      let survivingWorkers = [...game.workers];
+
+      game.enemies.forEach(e => {
         let killed = false;
 
-        // Apply hero continuous damage
-        for (let i = 0; i < gameRef.current.heroes.length; i++) {
-          const h = gameRef.current.heroes[i];
+        for (let i = 0; i < game.heroes.length; i++) {
+          const h = game.heroes[i];
           if (Math.hypot(e.x - h.x, e.y - h.y) < (35 * e.size)) {
-            e.hp -= 5 * dt; // Heroes deal 5 damage per second!
-            gameRef.current.needsRender = true;
+            e.hp -= 5 * dt;
           }
         }
 
-        // Check collision with soldiers (Soldiers die defending)
         for (let i = 0; i < survivingSoldiers.length; i++) {
           const s = survivingSoldiers[i];
           if (Math.hypot(e.x - s.x, e.y - s.y) < (20 * e.size)) {
             e.hp -= 1;
+            removeDOMElement(s.id);
             survivingSoldiers.splice(i, 1); 
-            gameRef.current.needsRender = true;
             if (e.hp <= 0) break;
           }
         }
 
-        if (e.hp <= 0) killed = true;
+        if (e.hp <= 0) {
+          killed = true;
+          removeDOMElement(e.id);
+        }
 
         if (!killed) {
-          // Slaughter Workers! (Actually Invade)
           for (let i = 0; i < survivingWorkers.length; i++) {
              const w = survivingWorkers[i];
              if (Math.hypot(e.x - w.x, e.y - w.y) < (15 * e.size)) {
-                survivingWorkers.splice(i, 1); // Worker dies!
-                gameRef.current.needsRender = true;
+                removeDOMElement(w.id);
+                survivingWorkers.splice(i, 1);
              }
           }
 
-          // Check if reached Town Center
           if (Math.hypot(500 - e.x, 500 - e.y) < (20 * e.size)) {
             const stealAmount = e.isBoss ? 50 : 10;
-            gameRef.current.resources.gold = Math.max(0, gameRef.current.resources.gold - stealAmount);
-            gameRef.current.resources.food = Math.max(0, gameRef.current.resources.food - stealAmount);
-            gameRef.current.needsRender = true;
+            game.resources.gold = Math.max(0, game.resources.gold - stealAmount);
+            game.resources.food = Math.max(0, game.resources.food - stealAmount);
           } else {
-            // Seek target (Worker or Town Center)
-            let targetX = 500;
-            let targetY = 500;
-            let minWDist = 120 * (e.isBoss ? 1.5 : 1); // Bosses have huge aggro range
-            let targetWorker = null;
-
+            let targetX = 500, targetY = 500, minWDist = 120 * (e.isBoss ? 1.5 : 1), targetWorker = null;
             for (let w of survivingWorkers) {
                const wDist = Math.hypot(e.x - w.x, e.y - w.y);
                if (wDist < minWDist) { minWDist = wDist; targetWorker = w; }
             }
-
             if (targetWorker) { targetX = targetWorker.x; targetY = targetWorker.y; }
 
-            const dx = targetX - e.x;
-            const dy = targetY - e.y;
-            const dist = Math.hypot(dx, dy);
-
-            e.x += (dx / dist) * (e.isBoss ? 20 : 40) * dt; // Bosses are heavy/slower
+            const dx = targetX - e.x, dy = targetY - e.y, dist = Math.hypot(dx, dy);
+            e.x += (dx / dist) * (e.isBoss ? 20 : 40) * dt;
             e.y += (dy / dist) * (e.isBoss ? 20 : 40) * dt;
             
             survivingEnemies.push(e);
-            
-            // Update DOM directly for smooth 60fps
             const el = document.getElementById(e.id);
-            if (el) { el.style.left = `${(e.x/1000)*100}%`; el.style.top = `${(e.y/1000)*100}%`; }
+            if (el) { 
+              el.style.setProperty('left', `${(e.x/1000)*100}%`); 
+              el.style.setProperty('top', `${(e.y/1000)*100}%`); 
+              if (e.isBoss) {
+                const hpBar = document.getElementById(`${e.id}_hp`);
+                if(hpBar) hpBar.style.setProperty('width', `${(e.hp/e.maxHp)*100}%`);
+              }
+            }
           }
         }
       });
+      game.enemies = survivingEnemies;
+      game.soldiers = survivingSoldiers;
+      game.workers = survivingWorkers;
 
-      gameRef.current.enemies = survivingEnemies;
-      gameRef.current.soldiers = survivingSoldiers;
-      gameRef.current.workers = survivingWorkers;
-
-      // --- 3. SOLDIER AI ---
-      gameRef.current.soldiers.forEach(s => {
-        let target = null;
-        let minDist = Infinity;
-        gameRef.current.enemies.forEach(e => {
+      // 3. SOLDIER AI
+      game.soldiers.forEach(s => {
+        let target = null, minDist = Infinity;
+        game.enemies.forEach(e => {
           const dist = Math.hypot(e.x - s.x, e.y - s.y);
           if (dist < minDist) { minDist = dist; target = e; }
         });
 
         if (target) {
-          // Chase Enemy
-          const dx = target.x - s.x;
-          const dy = target.y - s.y;
-          const dist = Math.hypot(dx, dy);
-          s.x += (dx / dist) * speed * dt;
-          s.y += (dy / dist) * speed * dt;
+          const dx = target.x - s.x, dy = target.y - s.y, dist = Math.hypot(dx, dy);
+          s.x += (dx / dist) * speed * dt; s.y += (dy / dist) * speed * dt;
         } else {
-          // Patrol Town Center
-          const dx = 500 - s.x;
-          const dy = 500 - s.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > 80) {
-            s.x += (dx / dist) * (speed * 0.4) * dt;
-            s.y += (dy / dist) * (speed * 0.4) * dt;
-          }
+          const dx = 500 - s.x, dy = 500 - s.y, dist = Math.hypot(dx, dy);
+          if (dist > 80) { s.x += (dx / dist) * (speed * 0.4) * dt; s.y += (dy / dist) * (speed * 0.4) * dt; }
         }
         const el = document.getElementById(s.id);
-        if (el) { el.style.left = `${(s.x/1000)*100}%`; el.style.top = `${(s.y/1000)*100}%`; }
+        if (el) { 
+          el.style.setProperty('left', `${(s.x/1000)*100}%`); 
+          el.style.setProperty('top', `${(s.y/1000)*100}%`); 
+        }
       });
 
-      // --- 3.5 HERO AI ---
-      gameRef.current.heroes.forEach(h => {
-        let target = null;
-        let minDist = Infinity;
-        gameRef.current.enemies.forEach(e => {
+      // 4. HERO AI
+      game.heroes.forEach(h => {
+        let target = null, minDist = Infinity;
+        game.enemies.forEach(e => {
           const dist = Math.hypot(e.x - h.x, e.y - h.y);
           if (dist < minDist) { minDist = dist; target = e; }
         });
-
-        const heroSpeed = speed * 1.8; // Faster than normal soldiers
+        const heroSpeed = speed * 1.8;
         if (target) {
-          // Sprint at Enemy
-          const dx = target.x - h.x;
-          const dy = target.y - h.y;
-          const dist = Math.hypot(dx, dy);
-          h.x += (dx / dist) * heroSpeed * dt;
-          h.y += (dy / dist) * heroSpeed * dt;
+          const dx = target.x - h.x, dy = target.y - h.y, dist = Math.hypot(dx, dy);
+          h.x += (dx / dist) * heroSpeed * dt; h.y += (dy / dist) * heroSpeed * dt;
         } else {
-          // Patrol Town Center loosely
-          const dx = 500 - h.x;
-          const dy = 500 - h.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > 150) {
-            h.x += (dx / dist) * (heroSpeed * 0.4) * dt;
-            h.y += (dy / dist) * (heroSpeed * 0.4) * dt;
-          } else {
-            // Wander slightly when idle
-            h.x += (Math.random() - 0.5) * heroSpeed * 0.5 * dt;
-            h.y += (Math.random() - 0.5) * heroSpeed * 0.5 * dt;
-          }
+          const dx = 500 - h.x, dy = 500 - h.y, dist = Math.hypot(dx, dy);
+          if (dist > 150) { h.x += (dx / dist) * (heroSpeed * 0.4) * dt; h.y += (dy / dist) * (heroSpeed * 0.4) * dt; } 
+          else { h.x += (Math.random() - 0.5) * heroSpeed * 0.5 * dt; h.y += (Math.random() - 0.5) * heroSpeed * 0.5 * dt; }
         }
         const el = document.getElementById(h.id);
-        if (el) { el.style.left = `${(h.x/1000)*100}%`; el.style.top = `${(h.y/1000)*100}%`; }
+        if (el) { 
+          el.style.setProperty('left', `${(h.x/1000)*100}%`); 
+          el.style.setProperty('top', `${(h.y/1000)*100}%`); 
+        }
       });
 
-      // --- 4. WORKER AI ---
-      const activeWorkerSpeed = speed * (gameRef.current.workerBoost ? 2 : 1);
-      const harvestAmount = 5 * (gameRef.current.workerBoost ? 2 : 1);
-      const hasEnemies = gameRef.current.enemies.length > 0;
+      // 5. WORKER AI
+      const activeWorkerSpeed = speed * (game.workerBoost ? 2 : 1);
+      const harvestAmount = 5 * (game.workerBoost ? 2 : 1);
+      const hasEnemies = game.enemies.length > 0;
 
-      gameRef.current.workers.forEach(w => {
-        // AI Logic
+      game.workers.forEach(w => {
         if (hasEnemies) {
           w.state = 'hiding';
-          let targetX = 500; // Fallback to Town Center
-          let targetY = 500;
-          let minDist = Infinity;
-          
-          // Look for nearest Hero or Soldier to hide behind
-          const protectors = [...gameRef.current.heroes, ...gameRef.current.soldiers];
+          let targetX = 500, targetY = 500, minDist = Infinity;
+          const protectors = [...game.heroes, ...game.soldiers];
           protectors.forEach(p => {
             const dist = Math.hypot(p.x - w.x, p.y - w.y);
-            if (dist < minDist) {
-              minDist = dist;
-              targetX = p.x;
-              targetY = p.y;
-            }
+            if (dist < minDist) { minDist = dist; targetX = p.x; targetY = p.y; }
           });
-
-          const dx = targetX - w.x;
-          const dy = targetY - w.y;
-          const dist = Math.hypot(dx, dy);
-
-          // Run to protector, but stop just short so they clump around them
-          if (dist > 30) {
-            w.x += (dx / dist) * activeWorkerSpeed * dt;
-            w.y += (dy / dist) * activeWorkerSpeed * dt;
-          }
+          const dx = targetX - w.x, dy = targetY - w.y, dist = Math.hypot(dx, dy);
+          if (dist > 30) { w.x += (dx / dist) * activeWorkerSpeed * dt; w.y += (dy / dist) * activeWorkerSpeed * dt; }
         } else {
-          // If they were hiding and enemies are gone, resume what they were doing
-          if (w.state === 'hiding') {
-            w.state = w.inventory ? 'returning' : 'idle';
-          }
+          if (w.state === 'hiding') w.state = w.inventory ? 'returning' : 'idle';
 
           if (w.state === 'idle') {
-            const activeKeys = Object.keys(gameRef.current.autoTasks).filter(k => gameRef.current.autoTasks[k]);
+            const activeKeys = Object.keys(game.autoTasks).filter(k => game.autoTasks[k]);
             if (activeKeys.length > 0) {
               const taskType = activeKeys[Math.floor(Math.random() * activeKeys.length)];
-              const validNodes = gameRef.current.nodes.filter(n => n.type === taskType);
+              const validNodes = game.nodes.filter(n => n.type === taskType);
               if (validNodes.length > 0) {
-                // Find nearest node
-                let nearest = validNodes[0];
-                let minDist = Infinity;
+                let nearest = validNodes[0], minDist = Infinity;
                 validNodes.forEach(n => {
                   const d = Math.hypot(n.x - w.x, n.y - w.y);
                   if (d < minDist) { minDist = d; nearest = n; }
                 });
-                w.target = nearest;
-                w.state = 'seeking';
+                w.target = nearest; w.state = 'seeking';
               }
             } else {
-               // Wander slightly near center if totally idle
-               const dx = 500 - w.x;
-               const dy = 500 - w.y;
-               if (Math.hypot(dx, dy) > 100) {
-                 w.x += (dx / Math.hypot(dx, dy)) * (activeWorkerSpeed * 0.3) * dt;
-                 w.y += (dy / Math.hypot(dx, dy)) * (activeWorkerSpeed * 0.3) * dt;
-               }
+               const dx = 500 - w.x, dy = 500 - w.y;
+               if (Math.hypot(dx, dy) > 100) { w.x += (dx / Math.hypot(dx, dy)) * (activeWorkerSpeed * 0.3) * dt; w.y += (dy / Math.hypot(dx, dy)) * (activeWorkerSpeed * 0.3) * dt; }
             }
           }
 
           if (w.state === 'seeking' && w.target) {
-            const dx = w.target.x - w.x;
-            const dy = w.target.y - w.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < 5) {
-              w.state = 'gathering';
-              w.timer = gameRef.current.workerBoost ? 0.5 : 1.0;
-            } else {
-              w.x += (dx / dist) * activeWorkerSpeed * dt;
-              w.y += (dy / dist) * activeWorkerSpeed * dt;
-            }
+            const dx = w.target.x - w.x, dy = w.target.y - w.y, dist = Math.hypot(dx, dy);
+            if (dist < 5) { w.state = 'gathering'; w.timer = game.workerBoost ? 0.5 : 1.0; } 
+            else { w.x += (dx / dist) * activeWorkerSpeed * dt; w.y += (dy / dist) * activeWorkerSpeed * dt; }
           }
 
           if (w.state === 'gathering' && w.target) {
             w.timer -= dt;
-            if (w.timer <= 0) {
-              w.inventory = w.target.type;
-              w.state = 'returning';
-              w.target = null;
-            }
+            if (w.timer <= 0) { w.inventory = w.target.type; w.state = 'returning'; w.target = null; }
           }
 
           if (w.state === 'returning') {
-            const dx = 500 - w.x;
-            const dy = 500 - w.y;
-            const dist = Math.hypot(dx, dy);
+            const dx = 500 - w.x, dy = 500 - w.y, dist = Math.hypot(dx, dy);
             if (dist < 20) {
-              if (w.inventory) {
-                gameRef.current.resources[w.inventory] += harvestAmount;
-                w.inventory = null;
-                gameRef.current.needsRender = true; // Tell UI to update numbers
-              }
+              if (w.inventory) { game.resources[w.inventory] += harvestAmount; w.inventory = null; }
               w.state = 'idle';
-            } else {
-              w.x += (dx / dist) * activeWorkerSpeed * dt;
-              w.y += (dy / dist) * activeWorkerSpeed * dt;
-            }
+            } else { w.x += (dx / dist) * activeWorkerSpeed * dt; w.y += (dy / dist) * activeWorkerSpeed * dt; }
           }
-        } // End of worker safe-state logic
+        }
 
-        // Direct DOM Update (Ultra fast)
         const el = document.getElementById(w.id);
         if (el) {
-          el.style.left = `${(w.x / 1000) * 100}%`;
-          el.style.top = `${(w.y / 1000) * 100}%`;
+          el.style.setProperty('left', `${(w.x / 1000) * 100}%`); 
+          el.style.setProperty('top', `${(w.y / 1000) * 100}%`);
         }
-        
         const invEl = document.getElementById(`${w.id}_inv`);
         if (invEl) {
           if (w.inventory) {
             invEl.textContent = w.inventory === 'wood' ? '🌲' : w.inventory === 'stone' ? '🪨' : w.inventory === 'gold' ? '🪙' : '🍒';
-            invEl.style.display = 'block';
-          } else {
-            invEl.style.display = 'none';
+            invEl.style.setProperty('display', 'block');
+          } else { 
+            invEl.style.setProperty('display', 'none'); 
           }
         }
       });
 
-      animationId = requestAnimationFrame(loop);
-    };
+      requestAnimationFrame(gameLoop);
+    }
 
-    animationId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animationId);
-  }, []);
+    // --- UI UPDATES (Called periodically to decouple from 60fps loop) ---
+    function updateUI() {
+      // Safe text updates using textContent to prevent readonly property errors
+      const safeSetText = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+      };
 
-  // 3. SYNC TO UI & FIREBASE (Runs slowly in background)
-  useEffect(() => {
-    const syncInterval = setInterval(() => {
-      setUiResources({ ...gameRef.current.resources });
-      setUiWorkers(gameRef.current.workers.length);
-      setUiSoldiers(gameRef.current.soldiers.length);
-      setUiWorkerBoost(gameRef.current.workerBoost);
-      setInvasionTimer(Math.max(0, Math.floor((gameRef.current.nextInvasion - Date.now()) / 1000)));
-      
-      if (gameRef.current.needsRender) {
-        setRenderTrigger(t => t + 1);
-        gameRef.current.needsRender = false;
+      safeSetText('ui-wood', Math.floor(game.resources.wood));
+      safeSetText('ui-stone', Math.floor(game.resources.stone));
+      safeSetText('ui-food', Math.floor(game.resources.food));
+      safeSetText('ui-gold', Math.floor(game.resources.gold));
+      safeSetText('ui-workers', game.workers.length);
+      safeSetText('ui-soldiers', game.soldiers.length);
+
+      const boostEl = document.getElementById('ui-worker-boost');
+      if (boostEl) {
+        boostEl.style.setProperty('display', game.workerBoost ? 'inline' : 'none');
       }
-    }, 500);
 
-    return () => clearInterval(syncInterval);
-  }, []);
+      const timer = Math.max(0, Math.floor((game.nextInvasion - Date.now()) / 1000));
+      const invTimerEl = document.getElementById('invasion-timer');
+      const invIconEl = document.getElementById('invasion-icon');
+      
+      if (invTimerEl && invIconEl) {
+        if (timer > 0) {
+          invTimerEl.textContent = `Invasion in ${timer}s`;
+          // Using setAttribute instead of .className = ...
+          invTimerEl.setAttribute('class', 'text-slate-300');
+          invIconEl.setAttribute('class', `text-slate-400 ${timer < 10 ? 'text-rose-500 animate-pulse' : ''}`);
+        } else {
+          invTimerEl.textContent = '🚨 INVADERS! 🚨';
+          invTimerEl.setAttribute('class', 'text-rose-400');
+          invIconEl.setAttribute('class', 'text-rose-500 animate-pulse');
+        }
+      }
 
-  useEffect(() => {
-    if (!auth) return;
-    
-    const initAuth = async () => {
+      // Safe disabled attribute handling
+      const btnWorker = document.getElementById('btn-hire-worker');
+      if (btnWorker) {
+        if (game.resources.food < 50 || game.resources.gold < 20) {
+          btnWorker.setAttribute('disabled', 'true');
+        } else {
+          btnWorker.removeAttribute('disabled');
+        }
+      }
+
+      const btnSoldier = document.getElementById('btn-hire-soldier');
+      if (btnSoldier) {
+        if (game.resources.food < 30 || game.resources.gold < 30) {
+          btnSoldier.setAttribute('disabled', 'true');
+        } else {
+          btnSoldier.removeAttribute('disabled');
+        }
+      }
+    }
+
+    // --- EVENT LISTENERS & ACTIONS ---
+    function setupControls() {
+      const tasks = ['wood', 'stone', 'food', 'gold'];
+      const colors = { wood: 'bg-emerald-600', stone: 'bg-slate-500', food: 'bg-rose-600', gold: 'bg-amber-600' };
+      
+      tasks.forEach(task => {
+        document.getElementById(`btn-auto-${task}`).addEventListener('click', (e) => {
+          game.autoTasks[task] = !game.autoTasks[task];
+          e.target.textContent = game.autoTasks[task] ? 'AUTO ON' : 'AUTO OFF';
+          if (game.autoTasks[task]) {
+            e.target.classList.replace('bg-slate-800', colors[task]);
+            e.target.classList.replace('text-slate-400', 'text-white');
+          } else {
+            e.target.classList.replace(colors[task], 'bg-slate-800');
+            e.target.classList.replace('text-white', 'text-slate-400');
+          }
+        });
+      });
+
+      document.getElementById('btn-hire-worker').addEventListener('click', () => {
+        if (game.resources.food >= 50 && game.resources.gold >= 20) {
+          game.resources.food -= 50; game.resources.gold -= 20;
+          addWorker(); updateUI();
+        }
+      });
+
+      document.getElementById('btn-hire-soldier').addEventListener('click', () => {
+        if (game.resources.food >= 30 && game.resources.gold >= 30) {
+          game.resources.food -= 30; game.resources.gold -= 30;
+          addSoldier(); updateUI();
+        }
+      });
+
+      document.getElementById('lobby-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('world-input').value.trim().toUpperCase();
+        const codes = ['FREECOINS', 'ALLIANCE', 'LUMINITE', 'DARKNESS', 'KOALASEATME', 'BOOST'];
+
+        if (codes.includes(input)) {
+          if (game.usedCodes.includes(input)) {
+             showToast("⚠️ Code already used!"); document.getElementById('world-input').value = ""; return;
+          }
+          game.usedCodes.push(input);
+          switch(input) {
+            case 'FREECOINS': game.resources.gold += 100; showToast("🎉 Rewarded 100 Coins! 💰"); break;
+            case 'ALLIANCE': for(let i=0; i<30; i++) addSoldier(); showToast("🎉 30 Soldiers joined! 🛡️"); break;
+            case 'LUMINITE': addHero('Lumi', '🌟'); showToast("🎉 Hero Lumi joined! 🌟"); break;
+            case 'DARKNESS': addHero('Shade', '🌑'); showToast("🎉 Hero Shade joined! 🌑"); break;
+            case 'KOALASEATME': addHero('BACONSUNITED', '🐨'); showToast("🎉 Hero BACONSUNITED joined! 🐨"); break;
+            case 'BOOST': game.workerBoost = true; showToast("🎉 2x Worker Boost Applied! ⚡"); break;
+          }
+          document.getElementById('world-input').value = "";
+          updateUI();
+        } else if (input) {
+          game.activeWorld = input.toLowerCase();
+          setupMultiplayer();
+        }
+      });
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.remove('hidden');
+      // Trigger reflow to restart animation
+      void t.offsetWidth;
+      t.classList.replace('opacity-0', 'opacity-100');
+      t.classList.add('-translate-y-4');
+      setTimeout(() => {
+        t.classList.replace('opacity-100', 'opacity-0');
+        t.classList.remove('-translate-y-4');
+        setTimeout(() => t.classList.add('hidden'), 300);
+      }, 3000);
+    }
+
+    // --- FIREBASE SYNC & MULTIPLAYER ---
+    async function initFirebase() {
+      if (!auth) return;
+      
+      const setStatus = (msg) => {
+        const el = document.getElementById('cloud-status');
+        if (el) el.textContent = msg;
+      };
+      setStatus("Connecting...");
+
+      onAuthStateChanged(auth, async (u) => {
+        if (u) {
+          user = u;
+          setStatus("☁️ Saved to Cloud");
+          
+          try {
+            const snap = await getDoc(doc(db, 'artifacts', appId, 'users', u.uid, 'kingdom', 'save'));
+            if (snap.exists()) {
+              const data = snap.data();
+              if (data.resources) Object.assign(game.resources, data.resources);
+              game.usedCodes = data.usedCodes || [];
+              game.workerBoost = data.workerBoost || false;
+              game.invasionCount = data.invasionCount || 0;
+              
+              // Load saved UI states
+              if (data.autoTasks) {
+                game.autoTasks = data.autoTasks;
+                ['wood','stone','food','gold'].forEach(t => {
+                   if(game.autoTasks[t]) document.getElementById(`btn-auto-${t}`).click(); // trigger the UI update safely
+                });
+              }
+
+              // Re-create dynamic entities based on save data counts
+              const wCount = data.workers || 3;
+              game.workers.forEach(w => removeDOMElement(w.id)); game.workers = [];
+              for(let i=0; i<wCount; i++) addWorker();
+
+              const sCount = data.soldiers || 0;
+              game.soldiers.forEach(s => removeDOMElement(s.id)); game.soldiers = [];
+              for(let i=0; i<sCount; i++) addSoldier();
+
+              if (data.heroes) {
+                game.heroes.forEach(h => removeDOMElement(h.id)); game.heroes = [];
+                data.heroes.forEach(h => addHero(h.type, h.emoji));
+              }
+            }
+          } catch (e) { console.error(e); }
+
+          // Background Saver
+          setInterval(() => {
+            if (!user || !db) return;
+            setStatus("☁️ Saving...");
+            setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'kingdom', 'save'), {
+              resources: game.resources,
+              autoTasks: game.autoTasks,
+              workers: game.workers.length,
+              soldiers: game.soldiers.length,
+              heroes: game.heroes,
+              usedCodes: game.usedCodes,
+              workerBoost: game.workerBoost,
+              invasionCount: game.invasionCount,
+              lastSaved: Date.now()
+            }, { merge: true }).then(() => setStatus("☁️ Saved to Cloud")).catch(()=>{});
+          }, 15000);
+        }
+      });
+
       try {
-        setCloudStatus("Connecting...");
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
         } else {
           await signInAnonymously(auth);
         }
       } catch (e) {
-        setCloudStatus("Offline (Firewall)");
+        setStatus("Offline (Firewall)");
       }
-    };
-    initAuth();
-
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        setUser(u);
-        setCloudStatus("☁️ Saved to Cloud");
-        try {
-          const snap = await getDoc(doc(db, 'artifacts', appId, 'users', u.uid, 'kingdom', 'save'));
-          if (snap.exists()) {
-            const data = snap.data();
-            gameRef.current.resources = data.resources || gameRef.current.resources;
-            gameRef.current.autoTasks = data.autoTasks || gameRef.current.autoTasks;
-            gameRef.current.heroes = data.heroes || gameRef.current.heroes;
-            gameRef.current.usedCodes = data.usedCodes || gameRef.current.usedCodes;
-            gameRef.current.workerBoost = data.workerBoost || false;
-            gameRef.current.invasionCount = data.invasionCount || 0;
-            setAutoTasks({ ...gameRef.current.autoTasks });
-            
-            // Reconcile workers
-            const count = data.workers || 3;
-            gameRef.current.workers = [];
-            for(let i=0; i<count; i++) {
-              gameRef.current.workers.push({
-                id: `w_${Math.random()}`,
-                x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20),
-                state: 'idle', target: null, inventory: null, timer: 0
-              });
-            }
-
-            // Reconcile soldiers
-            const sCount = data.soldiers || 0;
-            gameRef.current.soldiers = [];
-            for(let i=0; i<sCount; i++) {
-              gameRef.current.soldiers.push({
-                id: `s_${Math.random()}`,
-                x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20)
-              });
-            }
-            gameRef.current.needsRender = true;
-          }
-        } catch (e) {}
-      }
-    });
-
-    // Background saver
-    const saveInterval = setInterval(() => {
-      if (user && db) {
-        setCloudStatus("☁️ Saving...");
-        setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'kingdom', 'save'), {
-          resources: gameRef.current.resources,
-          autoTasks: gameRef.current.autoTasks,
-          workers: gameRef.current.workers.length,
-          soldiers: gameRef.current.soldiers.length,
-          heroes: gameRef.current.heroes,
-          usedCodes: gameRef.current.usedCodes,
-          workerBoost: gameRef.current.workerBoost,
-          invasionCount: gameRef.current.invasionCount,
-          lastSaved: Date.now()
-        }, { merge: true }).then(() => setCloudStatus("☁️ Saved to Cloud")).catch(() => {});
-      }
-    }, 15000);
-
-    return () => { unsub(); clearInterval(saveInterval); };
-  }, []);
-
-  // 4. MULTIPLAYER (Optional Background Task)
-  useEffect(() => {
-    if (!user || !activeWorld || !db) return;
-
-    const lobbyRef = collection(db, 'artifacts', appId, 'public', 'data', `lobby_${activeWorld}`);
-    
-    const unsub = onSnapshot(lobbyRef, (snap) => {
-      const active = [];
-      const now = Date.now();
-      snap.forEach(d => {
-        if (now - d.data().lastActive < 30000) active.push({ id: d.id, ...d.data() });
-      });
-      setNeighbors(active);
-    });
-
-    const ping = setInterval(() => {
-      setDoc(doc(lobbyRef, user.uid), {
-        gold: gameRef.current.resources.gold,
-        workers: gameRef.current.workers.length,
-        soldiers: gameRef.current.soldiers.length,
-        lastActive: Date.now()
-      }, { merge: true }).catch(()=>{});
-    }, 5000);
-
-    return () => { unsub(); clearInterval(ping); };
-  }, [user, activeWorld]);
-
-  // --- ACTIONS ---
-  const toggleTask = (type) => {
-    gameRef.current.autoTasks[type] = !gameRef.current.autoTasks[type];
-    setAutoTasks({ ...gameRef.current.autoTasks });
-  };
-
-  const hireWorker = () => {
-    if (gameRef.current.resources.food >= 50 && gameRef.current.resources.gold >= 20) {
-      gameRef.current.resources.food -= 50;
-      gameRef.current.resources.gold -= 20;
-      gameRef.current.workers.push({
-        id: `w_${Math.random()}`,
-        x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20),
-        state: 'idle', target: null, inventory: null, timer: 0
-      });
-      setUiResources({ ...gameRef.current.resources });
-      setUiWorkers(gameRef.current.workers.length);
-      gameRef.current.needsRender = true;
     }
-  };
 
-  const hireSoldier = () => {
-    if (gameRef.current.resources.food >= 30 && gameRef.current.resources.gold >= 30) {
-      gameRef.current.resources.food -= 30;
-      gameRef.current.resources.gold -= 30;
-      gameRef.current.soldiers.push({
-        id: `s_${Math.random()}`,
-        x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20)
-      });
-      setUiResources({ ...gameRef.current.resources });
-      setUiSoldiers(gameRef.current.soldiers.length);
-      gameRef.current.needsRender = true;
-    }
-  };
-
-  return (
-    <div className="min-h-[100dvh] bg-slate-950 text-slate-200 font-sans flex flex-col select-none">
+    function setupMultiplayer() {
+      if (!user || !db || !game.activeWorld) return;
       
-      {/* TOAST NOTIFICATION */}
-      {toastMessage && (
-        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-amber-400 text-amber-950 font-black px-6 py-3 rounded-xl shadow-2xl z-50 animate-bounce border-2 border-amber-500">
-          {toastMessage}
-        </div>
-      )}
+      const content = document.getElementById('lobby-content');
+      content.innerHTML = `
+        <div class="text-xs text-indigo-300 mb-2 font-bold uppercase">${game.activeWorld} - <span id="lobby-count">1</span> Online</div>
+        <div id="lobby-players" class="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar"></div>
+      `;
 
-      {/* HEADER */}
-      <header className="bg-slate-900 border-b border-slate-800 p-3 shrink-0">
-        <div className="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
-            <Shield className="w-8 h-8 text-amber-500" />
-            <h1 className="text-xl md:text-2xl font-bold text-white uppercase tracking-wider">Mini Kingdom</h1>
-            <span className="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">
-              {cloudStatus}
-            </span>
-          </div>
-          
-          <div className="flex gap-2 md:gap-4 overflow-x-auto pb-1 md:pb-0">
-            <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
-              <span>🌲</span> <span className="font-bold w-10 text-right">{uiResources.wood}</span>
-            </div>
-            <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
-              <span>🪨</span> <span className="font-bold w-10 text-right">{uiResources.stone}</span>
-            </div>
-            <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
-              <span>🍒</span> <span className="font-bold w-10 text-right">{uiResources.food}</span>
-            </div>
-            <div className="flex items-center gap-2 bg-amber-950/50 px-3 py-1.5 rounded-lg border border-amber-900/50">
-              <span>💰</span> <span className="font-bold text-amber-500 w-10 text-right">{uiResources.gold}</span>
-            </div>
-          </div>
-        </div>
-      </header>
+      const lobbyRef = collection(db, 'artifacts', appId, 'public', 'data', `lobby_${game.activeWorld}`);
+      
+      if (unsubLobby) unsubLobby();
 
-      {/* MAIN GRID */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-4 gap-4">
+      unsubLobby = onSnapshot(lobbyRef, (snap) => {
+        const active = [];
+        const now = Date.now();
+        snap.forEach(d => {
+          if (now - d.data().lastActive < 30000) active.push({ id: d.id, ...d.data() });
+        });
         
-        {/* LEFT PANEL: Controls */}
-        <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 flex flex-col gap-4">
-          <h2 className="font-bold text-lg text-amber-500 flex items-center gap-2 border-b border-slate-800 pb-2">
-            <Users className="w-5 h-5"/> Town Controls
-          </h2>
-          
-          <div className="space-y-3 flex-1">
-            <p className="text-xs text-slate-400">Enable AUTO to command your workers to harvest.</p>
-            
-            {/* Task Toggles */}
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="font-bold text-sm flex items-center gap-2">🌲 Wood</span>
-              <button onClick={() => toggleTask('wood')} className={`px-3 py-1 rounded text-xs font-bold transition-colors ${autoTasks.wood ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
-                {autoTasks.wood ? 'AUTO ON' : 'AUTO OFF'}
-              </button>
-            </div>
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="font-bold text-sm flex items-center gap-2">🪨 Stone</span>
-              <button onClick={() => toggleTask('stone')} className={`px-3 py-1 rounded text-xs font-bold transition-colors ${autoTasks.stone ? 'bg-slate-500 text-white' : 'bg-slate-800 text-slate-400'}`}>
-                {autoTasks.stone ? 'AUTO ON' : 'AUTO OFF'}
-              </button>
-            </div>
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="font-bold text-sm flex items-center gap-2">🍒 Food</span>
-              <button onClick={() => toggleTask('food')} className={`px-3 py-1 rounded text-xs font-bold transition-colors ${autoTasks.food ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
-                {autoTasks.food ? 'AUTO ON' : 'AUTO OFF'}
-              </button>
-            </div>
-            <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="font-bold text-sm flex items-center gap-2">🪙 Gold</span>
-              <button onClick={() => toggleTask('gold')} className={`px-3 py-1 rounded text-xs font-bold transition-colors ${autoTasks.gold ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
-                {autoTasks.gold ? 'AUTO ON' : 'AUTO OFF'}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2 mt-4">
-            <button 
-              onClick={hireWorker}
-              disabled={uiResources.food < 50 || uiResources.gold < 20}
-              className="w-full bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold p-3 rounded-lg transition-colors flex flex-col items-center"
-            >
-              <span>Hire Worker 🧑‍🌾 {uiWorkerBoost && '⚡'} ({uiWorkers})</span>
-              <span className="text-xs font-normal mt-1 opacity-80">Cost: 50 🍒, 20 💰</span>
-            </button>
-
-            <button 
-              onClick={hireSoldier}
-              disabled={uiResources.food < 30 || uiResources.gold < 30}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold p-3 rounded-lg transition-colors flex flex-col items-center"
-            >
-              <span>Train Soldier 🛡️ ({uiSoldiers})</span>
-              <span className="text-xs font-normal mt-1 opacity-80">Cost: 30 🍒, 30 💰</span>
-            </button>
-          </div>
-        </div>
-
-        {/* CENTER PANEL: THE MAP */}
-        <div className="lg:col-span-2 bg-[#166534] rounded-xl border-4 border-slate-800 overflow-hidden relative shadow-inner min-h-[400px]">
-          {/* Invasion Warning Timer */}
-          <div className="absolute top-2 left-2 z-40 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-700 flex items-center gap-2">
-            <Skull className={`w-4 h-4 ${invasionTimer < 10 ? 'text-rose-500 animate-pulse' : 'text-slate-400'}`} />
-            <span className={invasionTimer < 10 ? 'text-rose-400' : 'text-slate-300'}>
-              {invasionTimer > 0 ? `Invasion in ${invasionTimer}s` : '🚨 INVADERS! 🚨'}
-            </span>
-          </div>
-
-          {/* Town Center */}
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 flex items-center justify-center">
-            <div className="w-24 h-24 bg-[#854d0e] rounded-full absolute opacity-50"></div>
-            <span className="text-6xl relative z-10 filter drop-shadow-xl">🏰</span>
-          </div>
-
-          {/* Static Nodes */}
-          {gameRef.current.nodes.map(n => (
-            <div key={n.id} className="absolute text-2xl transform -translate-x-1/2 -translate-y-1/2 z-10 filter drop-shadow-md" style={{ left: `${(n.x/1000)*100}%`, top: `${(n.y/1000)*100}%` }}>
-              {n.emoji}
-            </div>
-          ))}
-
-          {/* Moving Workers */}
-          {gameRef.current.workers.map(w => (
-            <div key={w.id} id={w.id} className="absolute text-xl transform -translate-x-1/2 -translate-y-1/2 z-30" style={{ left: '50%', top: '50%' }}>
-              🧑‍🌾
-              <span id={`${w.id}_inv`} className="absolute -top-3 -right-2 text-sm hidden filter drop-shadow-md"></span>
-            </div>
-          ))}
-
-          {/* Moving Soldiers */}
-          {gameRef.current.soldiers.map(s => (
-            <div key={s.id} id={s.id} className="absolute text-xl transform -translate-x-1/2 -translate-y-1/2 z-30 drop-shadow-lg" style={{ left: '50%', top: '50%' }}>
-              🛡️
-            </div>
-          ))}
-
-          {/* Moving Heroes */}
-          {gameRef.current.heroes.map(h => (
-            <div key={h.id} id={h.id} className="absolute text-3xl transform -translate-x-1/2 -translate-y-1/2 z-40 drop-shadow-2xl" style={{ left: '50%', top: '50%' }}>
-              {h.emoji}
-            </div>
-          ))}
-
-          {/* Enemies */}
-          {gameRef.current.enemies.map(e => (
-            <div key={e.id} id={e.id} className={`absolute transform -translate-x-1/2 -translate-y-1/2 z-30 drop-shadow-lg ${e.isBoss ? 'text-5xl' : 'text-2xl'}`} style={{ left: '50%', top: '50%' }}>
-              {e.emoji}
-              {e.isBoss && (
-                <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 w-10 h-1.5 bg-red-950 rounded-full overflow-hidden border border-slate-800">
-                  <div className="h-full bg-red-500" style={{ width: `${(e.hp / 15) * 100}%` }}></div>
+        const cntEl = document.getElementById('lobby-count');
+        if (cntEl) cntEl.textContent = active.length;
+        
+        const playersDiv = document.getElementById('lobby-players');
+        playersDiv.innerHTML = '';
+        
+        active.forEach(n => {
+           const isMe = n.id === user.uid;
+           playersDiv.innerHTML += `
+             <div class="p-3 rounded-lg border ${isMe ? 'bg-indigo-900/40 border-indigo-500/50' : 'bg-slate-800 border-slate-700'}">
+                <div class="font-bold text-sm text-slate-200">${isMe ? 'You' : 'Player'}</div>
+                <div class="flex gap-3 text-xs text-slate-400 mt-1">
+                  <span>🧑‍🌾 ${n.workers || 0}</span>
+                  <span>🛡️ ${n.soldiers || 0}</span>
+                  <span>💰 ${n.gold || 0}</span>
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* RIGHT PANEL: Multiplayer */}
-        <div className="bg-indigo-950/40 rounded-xl border border-indigo-900/50 p-4 flex flex-col">
-          <h2 className="font-bold text-lg text-indigo-400 flex items-center gap-2 border-b border-indigo-900/50 pb-2 mb-4">
-            <Globe className="w-5 h-5"/> World Lobby
-          </h2>
-          
-          <form onSubmit={(e) => { 
-            e.preventDefault(); 
-            const input = worldId.trim().toUpperCase();
-            const codes = ['FREECOINS', 'ALLIANCE', 'LUMINITE', 'DARKNESS', 'KOALASEATME', 'BOOST'];
-
-            if (codes.includes(input)) {
-              if (gameRef.current.usedCodes.includes(input)) {
-                 setToastMessage("⚠️ Code already used!");
-                 setTimeout(() => setToastMessage(""), 3000);
-                 setWorldId("");
-                 return;
-              }
-              
-              gameRef.current.usedCodes.push(input);
-              gameRef.current.needsRender = true;
-
-              switch(input) {
-                case 'FREECOINS':
-                  gameRef.current.resources.gold += 100;
-                  setToastMessage("🎉 Rewarded 100 Coins! 💰");
-                  break;
-                case 'ALLIANCE':
-                  for(let i=0; i<30; i++) {
-                     gameRef.current.soldiers.push({ id: `s_${Math.random()}`, x: 500 + (Math.random()*40-20), y: 500 + (Math.random()*40-20) });
-                  }
-                  setToastMessage("🎉 30 Soldiers joined your Alliance! 🛡️");
-                  break;
-                case 'LUMINITE':
-                  gameRef.current.heroes.push({ id: `h_${Math.random()}`, type: 'Lumi', emoji: '🌟', x: 500, y: 500 });
-                  setToastMessage("🎉 Hero Lumi joined the Kingdom! 🌟");
-                  break;
-                case 'DARKNESS':
-                  gameRef.current.heroes.push({ id: `h_${Math.random()}`, type: 'Shade', emoji: '🌑', x: 500, y: 500 });
-                  setToastMessage("🎉 Hero Shade joined the Kingdom! 🌑");
-                  break;
-                case 'KOALASEATME':
-                  gameRef.current.heroes.push({ id: `h_${Math.random()}`, type: 'BACONSUNITED', emoji: '🐨', x: 500, y: 500 });
-                  setToastMessage("🎉 Hero BACONSUNITED joined the Kingdom! 🐨");
-                  break;
-                case 'BOOST':
-                  gameRef.current.workerBoost = true;
-                  setToastMessage("🎉 Worker 2x Speed & Harvest Boost Applied! ⚡");
-                  break;
-              }
-              
-              setTimeout(() => setToastMessage(""), 4000);
-              setWorldId("");
-              
-              // Force UI to sync instantly so the player feels the reward right away
-              setUiResources({ ...gameRef.current.resources });
-              setUiSoldiers(gameRef.current.soldiers.length);
-              setUiWorkerBoost(gameRef.current.workerBoost);
-
-            } else {
-              setActiveWorld(worldId.toLowerCase()); 
-            }
-          }} className="mb-4">
-            <div className="flex gap-2">
-              <input 
-                type="text" value={worldId} onChange={(e) => setWorldId(e.target.value)}
-                placeholder="Lobby name or Secret Code..."
-                className="flex-1 bg-slate-900 border border-indigo-800 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
-              />
-              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-2 rounded text-sm">
-                Join
-              </button>
-            </div>
-          </form>
-
-          {activeWorld ? (
-            <div className="flex-1 flex flex-col min-h-0">
-              <div className="text-xs text-indigo-300 mb-2 font-bold uppercase">{activeWorld} - {neighbors.length} Online</div>
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                {neighbors.map(n => (
-                  <div key={n.id} className={`p-3 rounded-lg border ${n.id === user?.uid ? 'bg-indigo-900/40 border-indigo-500/50' : 'bg-slate-800 border-slate-700'}`}>
-                    <div className="font-bold text-sm text-slate-200">{n.id === user?.uid ? 'You' : 'Player'}</div>
-                    <div className="flex gap-3 text-xs text-slate-400 mt-1">
-                      <span>🧑‍🌾 {n.workers || 0}</span>
-                      <span>🛡️ {n.soldiers || 0}</span>
-                      <span>💰 {n.gold || 0}</span>
-                    </div>
-                  </div>
-                ))}
               </div>
-            </div>
-          ) : (
-             <div className="flex-1 flex flex-col items-center justify-center text-center text-indigo-300/50">
-                <Power className="w-8 h-8 mb-2 opacity-50" />
-                <p className="text-xs">Enter a world name to share stats with friends.</p>
-             </div>
-          )}
-        </div>
+           `;
+        });
+      });
 
-      </main>
-    </div>
-  );
-}
+      // Multiplayer Ping
+      setInterval(() => {
+        if(!user || !db || !game.activeWorld) return;
+        setDoc(doc(lobbyRef, user.uid), {
+          gold: Math.floor(game.resources.gold),
+          workers: game.workers.length,
+          soldiers: game.soldiers.length,
+          lastActive: Date.now()
+        }, { merge: true }).catch(()=>{});
+      }, 5000);
+    }
+
+    // --- BOOTSTRAP ---
+    window.onload = () => {
+      initMap();
+      setupControls();
+      initFirebase();
+      setInterval(updateUI, 500); // Decouple UI text updates from 60fps loop
+      requestAnimationFrame(gameLoop);
+    };
+
+  </script>
+</body>
+</html>
